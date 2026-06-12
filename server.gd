@@ -170,10 +170,16 @@ func step_tick() -> void:
 		"fade_in":
 			fade_ticks += 1
 			if fade_ticks >= 30:
-				phase = "hub_done"; fade_ticks = 0
+				phase = "hub"; fade_ticks = 0
 				commit_profiles()
+				print("LOOP COMPLETE: party returned, profiles committed")
+				# reset for a fresh round (continuous demo)
+				for pid in players: players[pid]["ready"] = false
+				for pid in combo: combo[pid] = {"stage": 0, "last_attack": 0}
+				enemy = {"alive": false, "hp": 0, "spawn_tick": 0, "pos": Vector3(0, 0, -4)}
+				loot_box = {"present": false, "claims": []}
+				loot_seed += 7
 				broadcast("phase:hub")
-				print("LOOP COMPLETE: party returned, profiles committed to ", db_path)
 	# replicate positions + enemy at 10 Hz
 	if tick % 3 == 0 and (phase == "field" or phase == "hub"):
 		for pid in players:

@@ -581,11 +581,16 @@ func _first_richtext(node: Node) -> RichTextLabel:
 	return null
 
 func _cmd_screenshot(a: Dictionary):
-	if editor == null:
-		return _need_editor()
-	var img: Image = editor.get_base_control().get_viewport().get_texture().get_image()
+	var vp: Viewport = null
+	if editor != null:
+		vp = editor.get_base_control().get_viewport()
+	elif root != null:
+		vp = root.get_viewport()           # runtime: capture the live game viewport
+	if vp == null:
+		return _err("no viewport to capture")
+	var img: Image = vp.get_texture().get_image()
 	if img == null:
-		return _err("could not capture editor viewport")
+		return _err("could not capture viewport")
 	var path := String(a.get("path", "user://godot_mcp_screenshot.png"))
 	if img.save_png(path) != OK:
 		return _err("save_png failed")

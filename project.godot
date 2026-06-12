@@ -1,17 +1,37 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
 config_version=5
+
 [application]
+
 config/name="loop_slice"
 run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.7", "Double Precision")
 config/icon="res://icon.svg"
-[rendering]
-renderer/rendering_method="forward_plus"
-renderer/rendering_method.mobile="mobile"
-textures/vram_compression/import_etc2_astc=true
-
-[xr]
-openxr/enabled=true
-shaders/enabled=true
 
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/vsekai_godot_mcp/plugin.cfg")
+
+[rendering]
+
+textures/vram_compression/import_etc2_astc=true
+
+[xr]
+
+openxr/enabled=true
+shaders/enabled=true
+
+[autoload]
+
+McpRuntime="*res://addons/vsekai_godot_mcp/mcp_runtime.gd"
+
+[input]
+
+ui_focus_next={"deadzone":0.5,"events":[{"type":"key","keycode":4194306}]}

@@ -16,12 +16,16 @@ var peer: WebTransportPeer
 var my_id := 0
 var phase := "hub"
 var bot := OS.get_environment("BOT") == "1"
+var spectate := OS.get_environment("SPECTATE") == "1"
+var _focus_order: Array = []
+var _focus_idx: int = -1
+var _spec_cam: Camera3D = null
 var xr := OS.get_environment("XR") == "1" or OS.has_feature("mobile")
 var xr_interface: XRInterface
 var xr_origin: XROrigin3D
 var right_hand: XRController3D
 var left_hand: XRController3D
-var bot_name: String = OS.get_environment("BOT_NAME") if OS.get_environment("BOT_NAME") != "" else "player"
+var bot_name: String = ("spectator" if OS.get_environment("SPECTATE") == "1" else (OS.get_environment("BOT_NAME") if OS.get_environment("BOT_NAME") != "" else "player"))
 var avatar: CharacterBody3D
 var remotes := {}      # pid -> MeshInstance3D
 var enemy_node: MeshInstance3D
@@ -69,7 +73,18 @@ func _build_world() -> void:
 	am.mesh = cap; am.position.y = 0.8
 	var amat := StandardMaterial3D.new(); amat.albedo_color = Color(0.9, 0.8, 0.2); am.material_override = amat
 	avatar.add_child(am)
-	if xr:
+	if spectate:
+		# high 3/4 tactical camera (FFT / Blue Archive style), frames hub -> field
+		var tcam := Camera3D.new()
+		tcam.position = Vector3(7.5, 12.5, 9.0)
+		tcam.fov = 48.0
+		add_child(tcam)
+		tcam.look_at(Vector3(0.0, 0.5, -2.5), Vector3.UP)
+		tcam.current = true
+		_spec_cam = tcam
+		var am0 = avatar.get_child(0)
+		if am0: am0.visible = false       # do not draw the spectator body
+	elif xr:
 		xr_origin = XROrigin3D.new()
 		var xr_cam := XRCamera3D.new(); xr_cam.position.y = 1.7
 		xr_origin.add_child(xr_cam)
@@ -108,10 +123,40 @@ func _ball(pos: Vector3, r: float, col: Color) -> MeshInstance3D:
 	m.emission = col * 0.4; mi.material_override = m
 	add_child(mi); return mi
 
-func _remote(pid: int) -> MeshInstance3D:
+const ORB_PALETTE := [
+	Color(0.40, 0.70, 1.00), Color(0.50, 1.00, 0.55), Color(1.00, 0.55, 0.85),
+	Color(0.95, 0.85, 0.30), Color(0.65, 0.55, 1.00), Color(1.00, 0.60, 0.35)]
+
+func _remote(pid: int, kind: String) -> Node3D:
 	if not remotes.has(pid):
-		var mi := _ball(Vector3.ZERO, 0.45, Color(0.4, 0.6, 0.95))
-		remotes[pid] = mi
+		var holder := Node3D.new()
+		add_child(holder)
+		var is_xr := kind == "xr"
+		var col: Color = Color(0.98, 0.78, 0.12) if is_xr else ORB_PALETTE[pid % ORB_PALETTE.size()]
+		# the xr_grid dot orb (player sphere + 6 axis dots + orientation lines)
+		var orb = ClassDB.instantiate("XRGridOrientationOrb")
+		holder.add_child(orb)
+		orb.call("setup", col)
+		orb.position.y = 0.9
+		orb.scale = Vector3(2.2, 2.2, 2.2) if is_xr else Vector3(1.6, 1.6, 1.6)
+		# label
+		var lbl := Label3D.new()
+		lbl.text = ("Q3 #%d" % pid) if is_xr else ("P%d" % pid)
+		lbl.position = Vector3(0, 2.1, 0); lbl.font_size = 72; lbl.modulate = col
+		lbl.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		lbl.no_depth_test = true
+		holder.add_child(lbl)
+		# focus highlight ring (hidden unless focused)
+		var ring := MeshInstance3D.new()
+		var tor := TorusMesh.new(); tor.inner_radius = 0.7; tor.outer_radius = 0.85
+		ring.mesh = tor; ring.position.y = 0.05; ring.name = "focus_ring"
+		var rm := StandardMaterial3D.new(); rm.albedo_color = Color(1,1,1,0.9)
+		rm.emission_enabled = true; rm.emission = Color(1,1,1); ring.material_override = rm
+		ring.visible = false
+		holder.add_child(ring)
+		holder.set_meta("orb", orb); holder.set_meta("col", col)
+		remotes[pid] = holder
+		_focus_order.append(pid)
 	return remotes[pid]
 
 func handle(msg: String) -> void:
@@ -124,18 +169,24 @@ func handle(msg: String) -> void:
 		"fade": fade.color.a = 1.0
 		"phase":
 			phase = p[1]; fade.color.a = 0.0
+			if spectate: hud.text = "SPECTATING — phase: %s" % phase
 			if phase == "field":
 				avatar.position = Vector3(randf_range(-3, 3), 0, 2)
 				hud.text = "FIELD: SPACE to attack on the beat, E to grab loot"
 			elif phase == "hub":
 				avatar.position = Vector3(0, 0, 4)
-				hud.text = "back in hub — loop complete"
-				loop_done = true
-				if bot:
+				if bot and OS.get_environment("BOT_NO_TIMEOUT") == "1":
+					# continuous: reset and re-vote next round
+					bot_voted = false; got_grant = false; got_reject = false; bot_attack_timer = 0.0
+					hud.text = "bot %s: new round" % bot_name
+				elif bot:
 					var verdict := "GRANT" if got_grant else ("REJECT" if got_reject else "NONE")
 					print("BOT %s LOOP COMPLETE outcome=%s" % [bot_name, verdict])
 					peer.put_packet("bye:x".to_utf8_buffer())
 					get_tree().quit(0)
+				else:
+					loop_done = true
+					hud.text = "back in hub — loop complete"
 		"enemy":
 			if p[1] == "spawned": enemy_node.visible = true
 			elif p[1] == "hp" and int(p[2]) == 0: enemy_node.visible = false
@@ -150,7 +201,11 @@ func handle(msg: String) -> void:
 		"p":
 			var pid := int(p[1])
 			if pid != my_id:
-				_remote(pid).position = Vector3(float(p[2]), 0.45, float(p[3]))
+				var kind := (p[6] if p.size() > 6 else "flat")
+				var h := _remote(pid, kind)
+				h.position = Vector3(float(p[2]), 0.0, float(p[4]))
+				var yaw := float(p[5])
+				h.get_meta("orb").call("update_from_basis", Basis(Vector3.UP, yaw))
 
 func _physics_process(delta: float) -> void:
 	if not peer: return
@@ -170,17 +225,24 @@ func _physics_process(delta: float) -> void:
 				my_id = 0
 		return
 	if my_id == 0:
-		peer.put_packet(("join:%s" % bot_name).to_utf8_buffer())
+		peer.put_packet(("join:%s:%s" % [bot_name, ("xr" if xr else "flat")]).to_utf8_buffer())
 		my_id = -1 # waiting for welcome
 		return
 	if my_id < 0: return
-	if bot: _bot_drive(delta)
+	if spectate: _spectate_focus(delta)
+	elif bot: _bot_drive(delta)
 	else: _human_drive(delta)
 	send_accum += delta
 	if send_accum >= 0.1:
 		send_accum = 0.0
-		peer.put_packet(("pos:%.2f:%.2f" % [avatar.position.x, avatar.position.z]).to_utf8_buffer())
-	if Time.get_ticks_msec() - t0 > 120000 and bot and not loop_done and OS.get_environment("BOT_NO_TIMEOUT") != "1":
+		var tp: Vector3 = avatar.global_transform.origin
+		var yaw: float = avatar.rotation.y
+		if xr and xr_origin != null and xr_origin.has_node("XRCamera3D"):
+			var cx := xr_origin.get_node("XRCamera3D") as XRCamera3D
+			tp = cx.global_transform.origin
+			yaw = cx.global_transform.basis.get_euler().y
+		peer.put_packet(("tf:%.2f:%.2f:%.2f:%.3f" % [tp.x, tp.y, tp.z, yaw]).to_utf8_buffer())
+	if Time.get_ticks_msec() - t0 > 120000 and bot and not spectate and not loop_done and OS.get_environment("BOT_NO_TIMEOUT") != "1":
 		printerr("BOT %s TIMEOUT phase=%s" % [bot_name, phase]); get_tree().quit(1)
 
 func _on_xr_button(button: String, right: bool) -> void:
@@ -190,6 +252,37 @@ func _on_xr_button(button: String, right: bool) -> void:
 		peer.put_packet("grab:x".to_utf8_buffer())
 	elif not right and button == "by_button":
 		peer.put_packet("teleport:x".to_utf8_buffer())
+
+func _spectate_focus(delta: float) -> void:
+	# Tab cycles focus; number keys 1-9 jump; Esc returns to the wide overhead.
+	if Input.is_key_pressed(KEY_ESCAPE):
+		_focus_idx = -1
+	if Input.is_action_just_pressed("ui_focus_next"):  # Tab
+		if _focus_order.size() > 0:
+			_focus_idx = (_focus_idx + 1) % _focus_order.size()
+	for n in range(1, 10):
+		if Input.is_key_pressed(KEY_0 + n) and n <= _focus_order.size():
+			_focus_idx = n - 1
+	var wide_pos := Vector3(7.5, 12.5, 9.0)
+	var wide_look := Vector3(0.0, 0.5, -2.5)
+	var tgt_pos := wide_pos
+	var tgt_look := wide_look
+	var focused_pid := -1
+	if _focus_idx >= 0 and _focus_idx < _focus_order.size():
+		focused_pid = _focus_order[_focus_idx]
+		if remotes.has(focused_pid):
+			var fp: Vector3 = remotes[focused_pid].position
+			tgt_look = fp + Vector3(0, 0.9, 0)
+			tgt_pos = fp + Vector3(2.6, 4.2, 4.8)   # close 3/4 over the player
+	# highlight rings
+	for pid in remotes:
+		var r = remotes[pid].get_node_or_null("focus_ring")
+		if r: r.visible = (pid == focused_pid)
+	if _spec_cam:
+		_spec_cam.position = _spec_cam.position.lerp(tgt_pos, clamp(delta * 4.0, 0, 1))
+		_spec_cam.look_at(tgt_look, Vector3.UP)
+		var who := ("wide overhead" if focused_pid < 0 else "focus P%d" % focused_pid)
+		hud.text = "SPECTATING — %s   [Tab/1-9 focus, Esc wide]" % who
 
 func _human_drive(delta: float) -> void:
 	if xr and left_hand:
