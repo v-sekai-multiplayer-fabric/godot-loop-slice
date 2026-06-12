@@ -199,9 +199,10 @@ func handle(msg: String) -> void:
 			got_reject = true; loot_node.visible = false
 		"fx": pass # combat feedback; the HUD shows phase text
 		"p":
+			if p.size() < 7: return        # tolerate older/short transform packets
 			var pid := int(p[1])
 			if pid != my_id:
-				var kind := (p[6] if p.size() > 6 else "flat")
+				var kind: String = p[6]
 				var h := _remote(pid, kind)
 				h.position = Vector3(float(p[2]), 0.0, float(p[4]))
 				var yaw := float(p[5])

@@ -51,7 +51,8 @@ func roll_item() -> int:
 func handle(pid: int, parts: PackedStringArray) -> void:
 	match parts[0]:
 		"join":
-			players[pid] = {"name": parts[1], "pos": Vector3(randf_range(-2, 2), 0, randf_range(2, 4)),
+			players[pid] = {"name": parts[1], "kind": (parts[2] if parts.size() > 2 else "flat"),
+				"pos": Vector3(randf_range(-2, 2), 0, randf_range(2, 4)), "yaw": 0.0,
 				"ready": false, "kit": false, "items": []}
 			combo[pid] = {"stage": 0, "last_attack": 0}
 			send_to(pid, "welcome:%d" % pid)
@@ -60,9 +61,10 @@ func handle(pid: int, parts: PackedStringArray) -> void:
 			send_to(pid, "kit:monomate")
 			print("JOIN peer=%d name=%s roster=%d" % [pid, parts[1], players.size()])
 			broadcast("roster:%d" % players.size())
-		"pos":
-			if players.has(pid):
-				players[pid]["pos"] = Vector3(float(parts[1]), 0, float(parts[2]))
+		"tf":
+			if players.has(pid) and parts.size() >= 5:
+				players[pid]["pos"] = Vector3(float(parts[1]), float(parts[2]), float(parts[3]))
+				players[pid]["yaw"] = float(parts[4])
 		"teleport":
 			if players.has(pid) and phase == "hub":
 				players[pid]["ready"] = true
@@ -183,5 +185,7 @@ func step_tick() -> void:
 	# replicate positions + enemy at 10 Hz
 	if tick % 3 == 0 and (phase == "field" or phase == "hub"):
 		for pid in players:
-			var p = players[pid]["pos"]
-			broadcast("p:%d:%.2f:%.2f" % [pid, p.x, p.z])
+			var pp = players[pid]["pos"]
+			var yw = players[pid].get("yaw", 0.0)
+			var kd = players[pid].get("kind", "flat")
+			broadcast("p:%d:%.2f:%.2f:%.2f:%.3f:%s" % [pid, pp.x, pp.y, pp.z, yw, kd])
