@@ -1,0 +1,6 @@
+config_version=5
+[application]
+config/name="loop_slice"
+run/main_scene="res://main.tscn"
+[rendering]
+renderer/rendering_method="forward_plus"
