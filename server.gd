@@ -29,9 +29,9 @@ static func _fmt(t: int) -> String:
 	var d = Time.get_datetime_dict_from_unix_time(t)
 	return "%04d%02d%02d%02d%02d%02d" % [d.year, d.month, d.day, d.hour, d.minute, d.second]
 
-# Transport is switchable: ENet for the local slice (stable today), WebTransport
-# for the Quest-web path (TRANSPORT=wt) once the picoquic wedge is fixed. The text
-# protocol is transport-agnostic, so only peer creation differs.
+# Transport is switchable: ENet for the local slice, WebTransport for the
+# Quest-web path (TRANSPORT=wt). The text protocol is transport-agnostic, so only
+# peer creation differs.
 func _transport() -> String:
 	return "wt" if OS.get_environment("TRANSPORT") == "wt" else "enet"
 
