@@ -27,6 +27,9 @@ var xr_interface: XRInterface
 var xr_origin: XROrigin3D
 var right_hand: XRController3D
 var left_hand: XRController3D
+var xr_cam: XRCamera3D
+# edge-detect XR buttons (poll, not signal — robust against signal-wiring quirks)
+var _xr_prev := {"trigger": false, "ax": false, "by": false}
 var bot_name: String = ("spectator" if OS.get_environment("SPECTATE") == "1" else (OS.get_environment("BOT_NAME") if OS.get_environment("BOT_NAME") != "" else "player"))
 var avatar: CharacterBody3D
 var remotes := {}      # pid -> MeshInstance3D
@@ -113,17 +116,16 @@ func _build_world() -> void:
 		if am0: am0.visible = false       # do not draw the spectator body
 	elif xr:
 		xr_origin = XROrigin3D.new()
-		var xr_cam := XRCamera3D.new()   # head height comes from headset tracking, origin at floor
-		xr_origin.add_child(xr_cam)
-		left_hand = XRController3D.new(); left_hand.tracker = "left_hand"
-		right_hand = XRController3D.new(); right_hand.tracker = "right_hand"
-		xr_origin.add_child(left_hand); xr_origin.add_child(right_hand)
+		xr_cam = XRCamera3D.new()   # head height comes from headset tracking, origin at floor
+		# add_child(.., true) forces readable names ("XRCamera3D" not "@XRCamera3D@6")
+		xr_origin.add_child(xr_cam, true)
+		left_hand = XRController3D.new(); left_hand.name = "LeftHand"; left_hand.tracker = "left_hand"
+		right_hand = XRController3D.new(); right_hand.name = "RightHand"; right_hand.tracker = "right_hand"
+		xr_origin.add_child(left_hand, true); xr_origin.add_child(right_hand, true)
 		for h in [left_hand, right_hand]:
 			var hm := MeshInstance3D.new(); var hs := SphereMesh.new(); hs.radius = 0.06; hs.height = 0.12
-			hm.mesh = hs; h.add_child(hm)
-		avatar.add_child(xr_origin)
-		right_hand.button_pressed.connect(_on_xr_button.bind(true))
-		left_hand.button_pressed.connect(_on_xr_button.bind(false))
+			hm.mesh = hs; h.add_child(hm, true)
+		avatar.add_child(xr_origin, true)
 	else:
 		var cam := Camera3D.new()
 		cam.position = Vector3(0, 7.0, 6.0)        # high 3/4 tactical, frames you + the arena
@@ -408,14 +410,22 @@ func _spectate_focus(delta: float) -> void:
 		hud.text = "SPECTATING — %s   [Tab/1-9 focus, Esc wide]" % who
 
 func _human_drive(delta: float) -> void:
-	if xr and left_hand and xr_origin.has_node("XRCamera3D"):
+	if xr and left_hand and right_hand and xr_cam:
+		# locomotion: left thumbstick, camera-relative (stick up -> gaze forward)
 		var stick: Vector2 = left_hand.get_vector2("primary")
-		var cam := xr_origin.get_node("XRCamera3D") as XRCamera3D
-		# camera-relative: stick up -> camera forward, stick right -> camera right
-		var move: Vector3 = cam.global_transform.basis * Vector3(stick.x, 0.0, -stick.y)
+		var move: Vector3 = xr_cam.global_transform.basis * Vector3(stick.x, 0.0, -stick.y)
 		move.y = 0.0
-		if move.length() > 0.05:
+		if move.length() > 0.15:
 			avatar.position += move.normalized() * 3.0 * delta
+		# actions, edge-detected by polling (robust vs signal wiring):
+		# right trigger -> attack, right A -> grab, left Y/B -> teleport vote.
+		var trig := right_hand.is_button_pressed("trigger_click")
+		var ax := right_hand.is_button_pressed("ax_button")
+		var by := left_hand.is_button_pressed("by_button")
+		if trig and not _xr_prev["trigger"]: _put("attack:x")
+		if ax and not _xr_prev["ax"]: _put("grab:x")
+		if by and not _xr_prev["by"]: _put("teleport:x")
+		_xr_prev["trigger"] = trig; _xr_prev["ax"] = ax; _xr_prev["by"] = by
 		return
 	var dir := Vector3.ZERO
 	if Input.is_key_pressed(KEY_W): dir.z -= 1
