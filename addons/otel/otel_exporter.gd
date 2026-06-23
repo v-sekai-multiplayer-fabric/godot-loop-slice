@@ -186,11 +186,12 @@ func _post(path: String, body: String) -> void:
 	var tcp := StreamPeerTCP.new()
 	if tcp.connect_to_host(_host, _port) != OK:
 		return
-	# Poll until connected — localhost is essentially instant; cap at 100 ms.
+	# OS needs a real yield between polls to advance the TCP handshake.
 	var t := Time.get_ticks_msec()
 	while tcp.get_status() == StreamPeerTCP.STATUS_CONNECTING:
+		OS.delay_msec(1)
 		tcp.poll()
-		if Time.get_ticks_msec() - t > 100:
+		if Time.get_ticks_msec() - t > 500:
 			tcp.disconnect_from_host(); return
 	if tcp.get_status() != StreamPeerTCP.STATUS_CONNECTED:
 		return
