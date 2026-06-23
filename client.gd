@@ -2,7 +2,13 @@ extends Node3D
 # The playable loop client: Hub deck -> teleporter -> Field room -> melee combo
 # -> loot grab -> return. Flatscreen (WASD + mouse, SPACE attack, E grab,
 # T teleport vote). BOT=1 drives the same loop unattended for the smoke.
-const PORT = 54400
+const DEFAULT_PORT = 54400
+
+# Connect target comes from the environment so a packaged client can be repointed
+# at a non-default server without re-exporting; mirrors server.gd's LOOP_PORT.
+static func server_port() -> int:
+	var env := OS.get_environment("LOOP_PORT")
+	return int(env) if env.is_valid_int() else DEFAULT_PORT
 
 static func server_host() -> String:
 	var env := OS.get_environment("LOOP_HOST")
@@ -77,9 +83,9 @@ func _ready() -> void:
 func _make_client_peer() -> MultiplayerPeer:
 	if OS.get_environment("TRANSPORT") == "wt":
 		var w := WebTransportPeer.new()
-		return w if w.create_client(server_host(), PORT, "/wt") == OK else null
+		return w if w.create_client(server_host(), server_port(), "/wt") == OK else null
 	var e := ENetMultiplayerPeer.new()
-	return e if e.create_client(server_host(), PORT) == OK else null
+	return e if e.create_client(server_host(), server_port()) == OK else null
 
 func _build_world() -> void:
 	var sun := DirectionalLight3D.new(); sun.rotation_degrees = Vector3(-50, -30, 0); add_child(sun)
