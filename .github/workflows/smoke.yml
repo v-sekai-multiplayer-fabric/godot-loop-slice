@@ -1,0 +1,62 @@
+# Playable-loop smoke: boot the authoritative server + 4 bot clients and run the
+# whole slice (hub -> teleport vote -> field combat -> loot contention -> return
+# + sqlite commit), asserting LOOP COMPLETE with exactly one loot grant.
+#
+# Runs from source, so it needs the merged double-precision EDITOR (it owns the
+# WebTransport + SQLite modules the project uses); fetch it from a godot-images
+# release, the same asset the packaging export uses. Defaults to that release's
+# latest when no tag is given.
+name: Smoke
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      godot_images_tag:
+        description: godot-images release tag providing the merged editor (blank = latest)
+        required: false
+        default: ""
+      editor_asset:
+        description: Linux double editor asset name in that release
+        required: false
+        default: godot.linuxbsd.editor.double.x86_64
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      EDITOR_ASSET: ${{ github.event.inputs.editor_asset || 'godot.linuxbsd.editor.double.x86_64' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch merged double editor from godot-images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.godot_images_tag }}
+        run: |
+          mkdir -p tools
+          # No tag -> gh downloads the latest release's assets.
+          gh release download $TAG -R v-sekai-multiplayer-fabric/godot-images \
+            -p "$EDITOR_ASSET" -D tools
+          chmod +x "tools/$EDITOR_ASSET"
+
+      - name: Import project (build .godot cache)
+        run: |
+          GODOT="$GITHUB_WORKSPACE/tools/$EDITOR_ASSET"
+          # --import resolves res:// and writes the import cache a clean checkout lacks.
+          # This editor build's MCP plugin segfaults at *exit* (it probes adb for a
+          # Quest) AFTER the import work is done, so tolerate a non-zero exit and gate
+          # on the cache actually existing. The game (server/bots) runs fine — only
+          # the editor/--import teardown crashes.
+          "$GODOT" --headless --import . || true
+          "$GODOT" --headless --import . || true   # second pass settles first-import assets
+          if [ ! -d .godot ]; then echo "::error::import produced no .godot cache"; exit 1; fi
+          echo "import cache present:"; ls -la .godot | head
+
+      - name: Run playable-loop smoke (server + 4 bots)
+        run: GODOT="$GITHUB_WORKSPACE/tools/$EDITOR_ASSET" ./smoke.sh

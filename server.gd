@@ -2,7 +2,7 @@ extends SceneTree
 # The authoritative loop server: Hub -> fade -> Field (combat + loot) -> return.
 # Runs the proven reducers (combat step, loot first-touch, progression commit)
 # behind one WebTransportPeer listener; clients are humans or bots.
-const PORT = 54400
+const DEFAULT_PORT = 54400
 const TICK_HZ = 30.0
 const PLAYERS_NEEDED = int(4)
 # Authority capacity TARGET: one single-threaded server must support at least this
@@ -24,6 +24,11 @@ var enemy := {"alive": false, "hp": 0, "spawn_tick": 0, "pos": Vector3(0, 0, -4)
 var loot_box := {"present": false, "claims": []}
 var loot_seed := 12345
 var db_path := OS.get_environment("LOOP_DB") if OS.get_environment("LOOP_DB") != "" else "/tmp/loop_profiles.db"
+# Bind address/port come from the environment so packaging (the systemd unit and
+# the Podman quadlet) can repoint the listener without re-exporting; default to
+# all interfaces on DEFAULT_PORT. LOOP_HOST applies to ENet (WebTransport binds all).
+var port := int(OS.get_environment("LOOP_PORT")) if OS.get_environment("LOOP_PORT").is_valid_int() else DEFAULT_PORT
+var bind_host := OS.get_environment("LOOP_HOST") if OS.get_environment("LOOP_HOST") != "" else "*"
 
 static func _fmt(t: int) -> String:
 	var d = Time.get_datetime_dict_from_unix_time(t)
@@ -43,15 +48,17 @@ func _make_server_peer() -> MultiplayerPeer:
 		var cert = crypto.generate_self_signed_certificate_san(key, "CN=loop-zone",
 			_fmt(now), _fmt(now + 86400), PackedStringArray(["DNS:localhost", "IP:127.0.0.1"]))
 		var w := WebTransportPeer.new()
-		return w if w.create_server(PORT, "/wt", cert, key) == OK else null
+		return w if w.create_server(port, "/wt", cert, key) == OK else null
 	var e := ENetMultiplayerPeer.new()
-	return e if e.create_server(PORT, PLAYER_CAPACITY_TARGET) == OK else null
+	if bind_host not in ["", "*", "0.0.0.0"]:
+		e.set_bind_ip(bind_host)
+	return e if e.create_server(port, PLAYER_CAPACITY_TARGET) == OK else null
 
 func _init():
 	peer = _make_server_peer()
 	if not peer:
 		printerr("listen failed"); quit(1); return
-	print("LOOPSRV ready on %d (transport=%s)" % [PORT, _transport()])
+	print("LOOPSRV ready on %s:%d (transport=%s)" % [bind_host, port, _transport()])
 	# Attach the runtime MCP so the headless server is testable like the clients.
 	# The server is the SceneTree itself, so inspect its state in run_script via
 	# `Engine.get_main_loop()` (e.g. Engine.get_main_loop().phase / .players).
