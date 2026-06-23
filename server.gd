@@ -30,9 +30,20 @@ var db_path := OS.get_environment("LOOP_DB") if OS.get_environment("LOOP_DB") !=
 var port := int(OS.get_environment("LOOP_PORT")) if OS.get_environment("LOOP_PORT").is_valid_int() else DEFAULT_PORT
 var bind_host := OS.get_environment("LOOP_HOST") if OS.get_environment("LOOP_HOST") != "" else "*"
 
+# GDScript OTLP exporter (addons/otel/otel_exporter.gd) — works on any Godot build.
 var otel: OtelExporter
 var _round_trace_id := ""
 var _round_number := 0
+
+# Engine-module tracer — optional, requires a custom Godot build with the
+# OpenTelemetry module compiled in. Emits a richer loop.round / loop.combat span
+# pair using the engine's async+WAL export path. Enabled only when
+# ClassDB.class_exists("OpenTelemetry") is true; a no-op otherwise.
+const SPAN_SERVER := 2   # OpenTelemetry SpanKind.SERVER
+const STATUS_OK := 1     # OpenTelemetry StatusCode.OK
+var _eng_tracer = null   # engine OpenTelemetry node, null when unavailable
+var _eng_round := ""     # current loop.round span id (engine module)
+var _eng_field := ""     # current loop.combat child span id (engine module)
 
 static func _fmt(t: int) -> String:
 	var d = Time.get_datetime_dict_from_unix_time(t)
@@ -83,6 +94,36 @@ func _init():
 		var mcp_script = load("res://addons/vsekai_godot_mcp/mcp_runtime.gd")
 		if mcp_script:
 			root.call_deferred("add_child", mcp_script.new())
+	_eng_tracer_init()
+
+# Stand up the engine-module tracer if OTEL_EXPORTER_OTLP_ENDPOINT is set and
+# the engine build includes the OpenTelemetry module. Stays null otherwise.
+func _eng_tracer_init() -> void:
+	var endpoint := OS.get_environment("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if endpoint == "" or not ClassDB.class_exists("OpenTelemetry"):
+		return
+	_eng_tracer = ClassDB.instantiate("OpenTelemetry")
+	# OpenTelemetry is a Node; in the tree it processes its async HTTP export queue.
+	root.call_deferred("add_child", _eng_tracer)
+	_eng_tracer.init_tracer_provider("loop-slice-server", endpoint, {
+		"service.name": "loop-slice-server",
+		"service.version": "0.1",
+		"loop.transport": _transport(),
+	})
+	var hdrs := _eng_tracer_headers()
+	if not hdrs.is_empty():
+		_eng_tracer.set_headers(hdrs)
+	_eng_tracer.set_flush_interval(1000)
+	print("engine OTEL tracer ready -> %s (one root span per loop round)" % endpoint)
+
+# OTEL_EXPORTER_OTLP_HEADERS="k1=v1,k2=v2" (the OTLP standard) -> Dictionary.
+func _eng_tracer_headers() -> Dictionary:
+	var h := {}
+	for kv in OS.get_environment("OTEL_EXPORTER_OTLP_HEADERS").split(",", false):
+		var p := kv.split("=", false, 1)
+		if p.size() == 2:
+			h[p[0].strip_edges()] = p[1].strip_edges()
+	return h
 
 # Control messages go reliable; high-frequency position ("p:") goes unreliable.
 # This matters most on WebTransport, where each RELIABLE packet opens a fresh bidi
@@ -137,6 +178,12 @@ func handle(pid: int, parts: PackedStringArray) -> void:
 					otel.begin_phase(_round_trace_id, "fade_out")
 					phase = "fade_out"
 					broadcast("fade:out")
+					if _eng_tracer:
+						var roster := []
+						for p in players: roster.append(players[p]["name"])
+						_eng_round = _eng_tracer.start_span("loop.round", SPAN_SERVER)
+						_eng_tracer.set_attributes(_eng_round, {"loop.players": players.size(), "loop.roster": ",".join(roster)})
+						_eng_tracer.add_event(_eng_round, "party.formed", {"votes": n})
 		"attack":
 			if phase != "field" or not players.has(pid): return
 			otel.counter("loop.attacks", 1, {"peer": pid})
@@ -232,6 +279,9 @@ func step_tick() -> void:
 				for pid in players: players[pid]["pos"] = Vector3(randf_range(-3, 3), 0, 2)
 				broadcast("phase:field")
 				broadcast("enemy:spawned:%d" % MAX_HP)
+				if _eng_tracer and _eng_round != "":
+					_eng_field = _eng_tracer.start_span_with_parent("loop.combat", _eng_round)
+					_eng_tracer.add_event(_eng_round, "phase.field", {"enemy.hp": MAX_HP})
 		"field":
 			if loot_box["present"] and loot_box["claims"].size() > 0:
 				# first-touch: earliest tick, ties to lowest pid (LootCore.resolve)
@@ -251,6 +301,10 @@ func step_tick() -> void:
 				otel.end_phase(_round_trace_id, "field",
 					{"enemy_ticks_alive": tick - enemy.get("spawn_tick", tick)})
 				otel.begin_phase(_round_trace_id, "fade_in")
+				if _eng_tracer and _eng_round != "":
+					_eng_tracer.set_attributes(_eng_round, {"loot.item": item, "loot.winner_peer": best[0]})
+					_eng_tracer.add_event(_eng_round, "loot.granted", {"loot.item": item, "loot.winner_peer": best[0]})
+					if _eng_field != "": _eng_tracer.end_span(_eng_field); _eng_field = ""
 				phase = "fade_in"; broadcast("fade:out")
 		"fade_in":
 			fade_ticks += 1
@@ -261,6 +315,11 @@ func step_tick() -> void:
 				phase = "hub"; fade_ticks = 0
 				commit_profiles()
 				print("LOOP COMPLETE: party returned, profiles committed")
+				if _eng_tracer and _eng_round != "":
+					_eng_tracer.add_event(_eng_round, "loop.complete")
+					_eng_tracer.set_status(_eng_round, STATUS_OK)
+					_eng_tracer.end_span(_eng_round); _eng_round = ""
+					_eng_tracer.flush_all()
 				# reset for a fresh round (continuous demo)
 				for pid in players: players[pid]["ready"] = false
 				for pid in combo: combo[pid] = {"stage": 0, "last_attack": 0}
