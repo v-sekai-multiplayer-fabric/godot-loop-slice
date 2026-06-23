@@ -311,6 +311,11 @@ func step_tick() -> void:
 			if fade_ticks >= 30:
 				otel.end_phase(_round_trace_id, "fade_in")
 				otel.end_round(_round_trace_id, {"round": _round_number})
+				if _eng_tracer and _eng_round != "":
+					_eng_tracer.add_event(_eng_round, "loop.complete")
+					_eng_tracer.set_status(_eng_round, STATUS_OK)
+					_eng_tracer.end_span(_eng_round); _eng_round = ""
+					_eng_tracer.flush_all()
 				_round_number += 1
 				phase = "hub"; fade_ticks = 0
 				commit_profiles()
