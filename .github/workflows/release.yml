@@ -1,0 +1,31 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          # Tags containing '-' are pre-releases (v0.1.0-dev.1, -beta.1, -rc.1).
+          if echo "$tag" | grep -q '-'; then
+            prerelease="--prerelease"
+          else
+            prerelease=""
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            $prerelease \
+            --generate-notes
