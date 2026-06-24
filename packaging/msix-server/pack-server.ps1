@@ -1,16 +1,15 @@
 <#
-  Build + sign the loop-slice-server MSIX from an already-exported Win64 Godot
-  build that also contains loop-slice-server.exe (the .NET 8 launcher stub).
+  Build + sign the loop-slice-server MSIX from a Godot dedicated-server export.
   Requires Windows + Windows SDK (makeappx.exe, signtool.exe).
 
-  -BinDir   folder with loop-slice.exe, loop-slice.pck, and loop-slice-server.exe
+  -BinDir   folder containing loop-slice-server.exe (dedicated-server export, PCK embedded)
   -Version  4-part version, e.g. 0.1.0.1
   -OutDir   output dir (default dist)
   -Publisher Identity Publisher; MUST equal the signing cert subject (default CN=v-sekai)
   -PfxPath  signing .pfx; if omitted a self-signed TEST cert is generated (test-install only)
   -PfxPassword  .pfx password, if any
 
-  ex: pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows -Version 0.1.0.1
+  ex: pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows-server -Version 0.1.0.1
 #>
 [CmdletBinding()]
 param(
