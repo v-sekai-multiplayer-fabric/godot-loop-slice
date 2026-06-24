@@ -1,11 +1,14 @@
-# Build and sign the loop-slice client and server MSIX packages.
+# Build and sign the loop-slice client MSIX package.
 # Set secrets LOOP_PFX_BASE64 + LOOP_PFX_PASSWORD for a trusted cert;
-# without them both jobs self-sign a TEST cert (installable only after trusting it).
+# without them the job self-signs a TEST cert (installable only after trusting it).
 # The editor + double Windows template come from v-sekai-multiplayer-fabric/godot-images.
 #
 # On push: tags v* the version is derived from the git tag and the latest
 # godot-images release is used automatically. MSIX assets are uploaded to
 # the GitHub Release created by release.yml.
+#
+# Server launcher MSIX (.NET 8 stub that starts loop-slice.exe --headless
+# --script res://server.gd) is packaged separately in fabric-platform-central.
 name: Release MSIX
 
 on:
@@ -96,24 +99,10 @@ jobs:
           "$GODOT" --headless --export-release "Windows Desktop" build/windows/loop-slice.exe
           ls -la build/windows
 
-      - name: Upload client build (game exe + pck only)
+      - name: Upload Windows build
         uses: actions/upload-artifact@v4
         with:
-          name: windows-client-build
-          path: build/windows/
-
-      - name: Build server launcher stub
-        shell: bash
-        run: |
-          dotnet publish packaging/msix-server/launcher/launcher.csproj \
-            -c Release -r win-x64 --self-contained \
-            -o launcher_out
-          cp launcher_out/loop-slice-server.exe build/windows/
-
-      - name: Upload server build (game + server launcher)
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-server-build
+          name: windows-build
           path: build/windows/
 
   msix-client:
@@ -124,10 +113,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download client build
+      - name: Download Windows build
         uses: actions/download-artifact@v4
         with:
-          name: windows-client-build
+          name: windows-build
           path: build/windows
 
       - name: Import signing cert
@@ -153,39 +142,3 @@ jobs:
         shell: bash
         run: gh release upload "${{ github.ref_name }}" dist/v-sekai-loop-slice-*.msix --clobber
 
-  msix-server:
-    needs: build-windows
-    runs-on: windows-latest
-    env:
-      HAS_PFX: ${{ secrets.LOOP_PFX_BASE64 != '' }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download server build
-        uses: actions/download-artifact@v4
-        with:
-          name: windows-server-build
-          path: build/windows
-
-      - name: Import signing cert
-        if: ${{ env.HAS_PFX == 'true' }}
-        shell: bash
-        run: echo "${{ secrets.LOOP_PFX_BASE64 }}" | base64 -d > loop.pfx
-
-      - name: Pack + sign server MSIX
-        shell: pwsh
-        run: |
-          $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
-          pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows -Version "${{ needs.build-windows.outputs.version }}" -OutDir dist @pfx
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: loop-slice-server-msix
-          path: dist/v-sekai-loop-slice-server-*.msix
-
-      - name: Upload server MSIX to GitHub Release
-        if: ${{ github.event_name == 'push' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: gh release upload "${{ github.ref_name }}" dist/v-sekai-loop-slice-server-*.msix --clobber
