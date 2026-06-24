@@ -1,0 +1,134 @@
+# Build and sign the loop-slice client and server MSIX packages.
+# Set secrets LOOP_PFX_BASE64 + LOOP_PFX_PASSWORD for a trusted cert;
+# without them both jobs self-sign a TEST cert (installable only after trusting it).
+# The editor + double Windows template come from v-sekai-multiplayer-fabric/godot-images.
+name: Release MSIX
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Four-part package version (e.g. 0.1.0.1 for dev, 0.1.0.0 for release)"
+        required: true
+        default: 0.1.0.1
+      godot_images_tag:
+        description: godot-images release tag providing the merged editor + double templates
+        required: true
+      editor_asset:
+        description: Windows editor asset name in that release
+        required: true
+        default: godot.windows.editor.double.x86_64.exe
+      windows_template_asset:
+        description: Windows double export template asset name
+        required: true
+        default: godot.windows.template_release.double.x86_64.exe
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    outputs:
+      build_path: build/windows
+    env:
+      HAS_PFX: ${{ secrets.LOOP_PFX_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch merged editor + Windows template from godot-images
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.inputs.godot_images_tag }}
+        run: |
+          mkdir -p tools templates
+          gh release download "$TAG" -R v-sekai-multiplayer-fabric/godot-images \
+            -p '${{ github.event.inputs.editor_asset }}' -D tools
+          gh release download "$TAG" -R v-sekai-multiplayer-fabric/godot-images \
+            -p '${{ github.event.inputs.windows_template_asset }}' -D templates
+
+      - name: Export Windows build
+        shell: bash
+        run: |
+          GODOT="$GITHUB_WORKSPACE/tools/${{ github.event.inputs.editor_asset }}"
+          tmpl="$GITHUB_WORKSPACE/templates/${{ github.event.inputs.windows_template_asset }}"
+          sed -i "s|custom_template/release=.*|custom_template/release=\"$tmpl\"|" export_presets.cfg
+          mkdir -p build/windows
+          "$GODOT" --headless --import . || true
+          "$GODOT" --headless --export-release "Windows Desktop" build/windows/loop-slice.exe
+          ls -la build/windows
+
+      - name: Build server launcher stub
+        shell: bash
+        run: |
+          dotnet publish packaging/msix-server/launcher/launcher.csproj \
+            -c Release -r win-x64 --self-contained \
+            -o launcher_out
+          cp launcher_out/loop-slice-server.exe build/windows/
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: build/windows/
+
+  msix-client:
+    needs: build-windows
+    runs-on: windows-latest
+    env:
+      HAS_PFX: ${{ secrets.LOOP_PFX_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: build/windows
+
+      - name: Import signing cert
+        if: ${{ env.HAS_PFX == 'true' }}
+        shell: bash
+        run: echo "${{ secrets.LOOP_PFX_BASE64 }}" | base64 -d > loop.pfx
+
+      - name: Pack + sign client MSIX
+        shell: pwsh
+        run: |
+          $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
+          pwsh packaging/msix/pack.ps1 -BinDir build/windows -Version "${{ github.event.inputs.version }}" -OutDir dist @pfx
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loop-slice-msix
+          path: dist/v-sekai-loop-slice-*.msix
+
+  msix-server:
+    needs: build-windows
+    runs-on: windows-latest
+    env:
+      HAS_PFX: ${{ secrets.LOOP_PFX_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Windows build
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-build
+          path: build/windows
+
+      - name: Import signing cert
+        if: ${{ env.HAS_PFX == 'true' }}
+        shell: bash
+        run: echo "${{ secrets.LOOP_PFX_BASE64 }}" | base64 -d > loop.pfx
+
+      - name: Pack + sign server MSIX
+        shell: pwsh
+        run: |
+          $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
+          pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows -Version "${{ github.event.inputs.version }}" -OutDir dist @pfx
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: loop-slice-server-msix
+          path: dist/v-sekai-loop-slice-server-*.msix
