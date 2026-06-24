@@ -2,6 +2,10 @@
 # Set secrets LOOP_PFX_BASE64 + LOOP_PFX_PASSWORD for a trusted cert;
 # without them both jobs self-sign a TEST cert (installable only after trusting it).
 # The editor + double Windows template come from v-sekai-multiplayer-fabric/godot-images.
+#
+# On push: tags v* the version is derived from the git tag and the latest
+# godot-images release is used automatically. MSIX assets are uploaded to
+# the GitHub Release created by release.yml.
 name: Release MSIX
 
 on:
@@ -10,7 +14,7 @@ on:
       version:
         description: "Four-part package version (e.g. 0.1.0.1 for dev, 0.1.0.0 for release)"
         required: true
-        default: 0.1.0.1
+        default: "0.1.0.1"
       godot_images_tag:
         description: godot-images release tag providing the merged editor + double templates
         required: true
@@ -22,6 +26,8 @@ on:
         description: Windows double export template asset name
         required: true
         default: godot.windows.template_release.double.x86_64.exe
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -30,29 +36,62 @@ jobs:
   build-windows:
     runs-on: windows-latest
     outputs:
-      build_path: build/windows
+      version: ${{ steps.inputs.outputs.version }}
+      godot_tag: ${{ steps.inputs.outputs.godot_tag }}
+      editor_asset: ${{ steps.inputs.outputs.editor_asset }}
+      windows_template_asset: ${{ steps.inputs.outputs.windows_template_asset }}
     env:
       HAS_PFX: ${{ secrets.LOOP_PFX_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
+      - name: Resolve inputs
+        id: inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            tag="${GITHUB_REF_NAME}"
+            semver="${tag#v}"
+            core="${semver%%-*}"
+            pre="${semver#${core}}"
+            build_n="${pre##*.}"
+            [ -z "$pre" ] && build_n=0
+            version="${core}.${build_n}"
+            godot_tag=$(gh release list -R v-sekai-multiplayer-fabric/godot-images \
+              --limit 1 --json tagName -q '.[0].tagName')
+            editor_asset="godot.windows.editor.double.x86_64.exe"
+            windows_template_asset="godot.windows.template_release.double.x86_64.exe"
+          else
+            version="${{ github.event.inputs.version }}"
+            godot_tag="${{ github.event.inputs.godot_images_tag }}"
+            editor_asset="${{ github.event.inputs.editor_asset }}"
+            windows_template_asset="${{ github.event.inputs.windows_template_asset }}"
+          fi
+          echo "version=$version"              >> "$GITHUB_OUTPUT"
+          echo "godot_tag=$godot_tag"          >> "$GITHUB_OUTPUT"
+          echo "editor_asset=$editor_asset"    >> "$GITHUB_OUTPUT"
+          echo "windows_template_asset=$windows_template_asset" >> "$GITHUB_OUTPUT"
+
       - name: Fetch merged editor + Windows template from godot-images
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.godot_images_tag }}
         run: |
           mkdir -p tools templates
-          gh release download "$TAG" -R v-sekai-multiplayer-fabric/godot-images \
-            -p '${{ github.event.inputs.editor_asset }}' -D tools
-          gh release download "$TAG" -R v-sekai-multiplayer-fabric/godot-images \
-            -p '${{ github.event.inputs.windows_template_asset }}' -D templates
+          gh release download "${{ steps.inputs.outputs.godot_tag }}" \
+            -R v-sekai-multiplayer-fabric/godot-images \
+            -p "${{ steps.inputs.outputs.editor_asset }}" -D tools
+          gh release download "${{ steps.inputs.outputs.godot_tag }}" \
+            -R v-sekai-multiplayer-fabric/godot-images \
+            -p "${{ steps.inputs.outputs.windows_template_asset }}" -D templates
 
       - name: Export Windows build
         shell: bash
         run: |
-          GODOT="$GITHUB_WORKSPACE/tools/${{ github.event.inputs.editor_asset }}"
-          tmpl="$GITHUB_WORKSPACE/templates/${{ github.event.inputs.windows_template_asset }}"
+          GODOT="$GITHUB_WORKSPACE/tools/${{ steps.inputs.outputs.editor_asset }}"
+          tmpl="$GITHUB_WORKSPACE/templates/${{ steps.inputs.outputs.windows_template_asset }}"
           sed -i "s|custom_template/release=.*|custom_template/release=\"$tmpl\"|" export_presets.cfg
           mkdir -p build/windows
           "$GODOT" --headless --import . || true
@@ -96,12 +135,19 @@ jobs:
         shell: pwsh
         run: |
           $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
-          pwsh packaging/msix/pack.ps1 -BinDir build/windows -Version "${{ github.event.inputs.version }}" -OutDir dist @pfx
+          pwsh packaging/msix/pack.ps1 -BinDir build/windows -Version "${{ needs.build-windows.outputs.version }}" -OutDir dist @pfx
 
       - uses: actions/upload-artifact@v4
         with:
           name: loop-slice-msix
           path: dist/v-sekai-loop-slice-*.msix
+
+      - name: Upload client MSIX to GitHub Release
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${{ github.ref_name }}" dist/v-sekai-loop-slice-*.msix --clobber
 
   msix-server:
     needs: build-windows
@@ -126,9 +172,16 @@ jobs:
         shell: pwsh
         run: |
           $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
-          pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows -Version "${{ github.event.inputs.version }}" -OutDir dist @pfx
+          pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows -Version "${{ needs.build-windows.outputs.version }}" -OutDir dist @pfx
 
       - uses: actions/upload-artifact@v4
         with:
           name: loop-slice-server-msix
           path: dist/v-sekai-loop-slice-server-*.msix
+
+      - name: Upload server MSIX to GitHub Release
+        if: ${{ github.event_name == 'push' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${{ github.ref_name }}" dist/v-sekai-loop-slice-server-*.msix --clobber
