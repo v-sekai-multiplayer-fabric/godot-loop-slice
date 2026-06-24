@@ -40,8 +40,6 @@ jobs:
       godot_tag: ${{ steps.inputs.outputs.godot_tag }}
       editor_asset: ${{ steps.inputs.outputs.editor_asset }}
       windows_template_asset: ${{ steps.inputs.outputs.windows_template_asset }}
-    env:
-      HAS_PFX: ${{ secrets.LOOP_PFX_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -98,6 +96,12 @@ jobs:
           "$GODOT" --headless --export-release "Windows Desktop" build/windows/loop-slice.exe
           ls -la build/windows
 
+      - name: Upload client build (game exe + pck only)
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-client-build
+          path: build/windows/
+
       - name: Build server launcher stub
         shell: bash
         run: |
@@ -106,10 +110,10 @@ jobs:
             -o launcher_out
           cp launcher_out/loop-slice-server.exe build/windows/
 
-      - name: Upload Windows build
+      - name: Upload server build (game + server launcher)
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build
+          name: windows-server-build
           path: build/windows/
 
   msix-client:
@@ -120,10 +124,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows build
+      - name: Download client build
         uses: actions/download-artifact@v4
         with:
-          name: windows-build
+          name: windows-client-build
           path: build/windows
 
       - name: Import signing cert
@@ -157,10 +161,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download Windows build
+      - name: Download server build
         uses: actions/download-artifact@v4
         with:
-          name: windows-build
+          name: windows-server-build
           path: build/windows
 
       - name: Import signing cert
