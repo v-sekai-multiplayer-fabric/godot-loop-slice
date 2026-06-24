@@ -31,6 +31,7 @@ shaders/enabled=true
 [autoload]
 
 McpRuntime="*res://addons/vsekai_godot_mcp/mcp_runtime.gd"
+ServerDetect="*res://autoload/server_detect.gd"
 
 [input]
 
