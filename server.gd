@@ -3,6 +3,13 @@ extends SceneTree
 # Runs the proven reducers (combat step, loot first-touch, progression commit)
 # behind one WebTransportPeer listener; clients are humans or bots.
 const DEFAULT_PORT = 54400
+# Scene AABB for Hilbert code normalisation (hilbertOfBox in HilbertBroadphase.lean).
+const SCENE_MIN := Vector3(-200.0, -50.0, -200.0)
+const SCENE_MAX := Vector3( 200.0,  50.0,  200.0)
+# AOI radius in metres — axis-aligned cube, aoiCells=1 from aoiBand_width_bound.
+const AOI_RADIUS := 60.0
+# Max entities per Hilbert prefix group (formGroups maxGroupSize in HilbertBroadphase.lean).
+const HILBERT_GROUP_SIZE := 32
 const TICK_HZ = 30.0
 const PLAYERS_NEEDED = int(4)
 # Authority capacity TARGET: one single-threaded server must support at least this
@@ -125,6 +132,50 @@ func send_to(pid: int, msg: String, reliable := true, channel := CH_CONTROL) -> 
 
 func broadcast(msg: String, reliable := true, channel := CH_CONTROL) -> void:
 	for pid in players: send_to(pid, msg, reliable, channel)
+
+# Skilling 2004 forward Hilbert transform, order=10 → 30-bit code.
+# Transcribed from axesToTranspose + interleave3 in HilbertRoundtrip.lean.
+static func _hilbert3d(nx: int, ny: int, nz: int) -> int:
+	var x := nx & 1023; var y := ny & 1023; var z := nz & 1023
+	for i in range(9):
+		var q := 1 << (9 - i); var p := q - 1
+		if z & q != 0: x ^= p
+		else: var tz := (x ^ z) & p; x ^= tz; z ^= tz
+		if y & q != 0: x ^= p
+		else: var ty := (x ^ y) & p; x ^= ty; y ^= ty
+	var y2 := y ^ x; var z2 := z ^ y2; var tf := 0
+	for i in range(9):
+		var q := 1 << (9 - i)
+		if z2 & q != 0: tf ^= q - 1
+	x ^= tf; y2 ^= tf; z2 ^= tf
+	var h := 0
+	for b in range(9, -1, -1):
+		h = (h << 1) | ((z2 >> b) & 1)
+		h = (h << 1) | ((y2 >> b) & 1)
+		h = (h << 1) | ((x >> b) & 1)
+	return h
+
+# hilbertOfBox from HilbertBroadphase.lean: normalise to [0,1023]³ then hilbert3D.
+static func _hilbert_code(pos: Vector3) -> int:
+	var nx := clampi(int((pos.x - SCENE_MIN.x) * 1024.0 / maxf(SCENE_MAX.x - SCENE_MIN.x, 1.0)), 0, 1023)
+	var ny := clampi(int((pos.y - SCENE_MIN.y) * 1024.0 / maxf(SCENE_MAX.y - SCENE_MIN.y, 1.0)), 0, 1023)
+	var nz := clampi(int((pos.z - SCENE_MIN.z) * 1024.0 / maxf(SCENE_MAX.z - SCENE_MIN.z, 1.0)), 0, 1023)
+	return _hilbert3d(nx, ny, nz)
+
+# 3-pass counting sort on 30-bit Hilbert codes — O(n), not O(n log n).
+# Implements the radix-sort step from LowerBound.lean ("Radix sort: O(N)").
+# HilbertBroadphase.lean uses merge sort for proof simplicity; this is production.
+static func _radix_sort_hilbert(entries: Array) -> Array:
+	var r := entries
+	for shift in [0, 10, 20]:
+		var count: Array = []; count.resize(1024); count.fill(0)
+		for e in r: count[(e.code >> shift) & 1023] += 1
+		var prefix := 0
+		for i in range(1024): var c := count[i]; count[i] = prefix; prefix += c
+		var out: Array = []; out.resize(r.size())
+		for e in r: var b := (e.code >> shift) & 1023; out[count[b]] = e; count[b] += 1
+		r = out
+	return r
 
 func roll_item() -> int:
 	# the proven loot roll (xorshift32 over cumw 50/80/100 -> items 101/202/303)
@@ -306,15 +357,50 @@ func step_tick() -> void:
 				_span_phase = _otel.start_span_with_parent("hub", _span_round)
 				_otel.log_message("INFO", "LOOP COMPLETE: party returned, profiles committed", {})
 				broadcast("phase:hub")
-	# replicate positions + enemy at 10 Hz
+	# Replicate positions at 10 Hz via Hilbert broadphase — O(n+k).
+	# Follows LowerBound.lean: radix sort O(n) + group scan O(n+k).
+	# hilbert_prune_sound justifies skipping groups with disjoint AABBs.
 	if tick % 3 == 0 and (phase == "field" or phase == "hub"):
+		# Step 1: Hilbert codes — O(n)
+		var entries: Array = []
 		for pid in players:
-			var pp = players[pid]["pos"]
-			var yw = players[pid].get("yaw", 0.0)
-			var kd = players[pid].get("kind", "flat")
-			var rt = players[pid].get("rtt", 0)
-			var age = Time.get_ticks_msec() - players[pid].get("last_heard", 0)
-			broadcast("p:%d:%.2f:%.2f:%.2f:%.3f:%s:%d:%d" % [pid, pp.x, pp.y, pp.z, yw, kd, rt, age], false, CH_POSITION)
+			var pos: Vector3 = players[pid]["pos"]
+			entries.append({"code": _hilbert_code(pos), "pid": pid, "pos": pos})
+		# Step 2: radix sort on 30-bit codes — O(n)
+		entries = _radix_sort_hilbert(entries)
+		# Step 3: form groups by Hilbert prefix — O(n)
+		var groups: Array = []
+		var en := entries.size()
+		var gi := 0
+		while gi < en:
+			var gj := mini(gi + HILBERT_GROUP_SIZE - 1, en - 1)
+			var mnx: float = entries[gi].pos.x; var mnz: float = entries[gi].pos.z
+			var mxx: float = mnx; var mxz: float = mnz
+			for k in range(gi + 1, gj + 1):
+				var p: Vector3 = entries[k].pos
+				if p.x < mnx: mnx = p.x
+				if p.z < mnz: mnz = p.z
+				if p.x > mxx: mxx = p.x
+				if p.z > mxz: mxz = p.z
+			groups.append({"first": gi, "last": gj, "mnx": mnx, "mnz": mnz, "mxx": mxx, "mxz": mxz})
+			gi = gj + 1
+		# Step 4: per-sender group prune + AOI check — O(n+k)
+		for entry in entries:
+			var pid: int = entry.pid
+			var pp: Vector3 = entry.pos
+			var yw: float = players[pid].get("yaw", 0.0)
+			var kd: String = players[pid].get("kind", "flat")
+			var rt: int = players[pid].get("rtt", 0)
+			var age: int = Time.get_ticks_msec() - players[pid].get("last_heard", 0)
+			var msg := "p:%d:%.2f:%.2f:%.2f:%.3f:%s:%d:%d" % [pid, pp.x, pp.y, pp.z, yw, kd, rt, age]
+			var smnx := pp.x - AOI_RADIUS; var smnz := pp.z - AOI_RADIUS
+			var smxx := pp.x + AOI_RADIUS; var smxz := pp.z + AOI_RADIUS
+			for g in groups:
+				if smxx < g.mnx or g.mxx < smnx or smxz < g.mnz or g.mxz < smnz: continue
+				for k in range(g.first, g.last + 1):
+					var rp: Vector3 = entries[k].pos
+					if absf(pp.x - rp.x) <= AOI_RADIUS and absf(pp.z - rp.z) <= AOI_RADIUS:
+						send_to(entries[k].pid, msg, false, CH_POSITION)
 	if tick % 15 == 0:
 		for pid in players: send_to(pid, "ping:%d" % Time.get_ticks_msec())
 	if tick % 30 == 0:
