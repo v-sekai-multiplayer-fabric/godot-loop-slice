@@ -9,7 +9,13 @@ const SCENE_MAX := Vector3( 200.0,  50.0,  200.0)
 # AOI radius in metres — axis-aligned cube, aoiCells=1 from aoiBand_width_bound.
 const AOI_RADIUS := 60.0
 # Max entities per Hilbert prefix group (formGroups maxGroupSize in HilbertBroadphase.lean).
-const HILBERT_GROUP_SIZE := 32
+# 16 halves intra-group pairs (C(32,2)=496 → C(16,2)=120) → ~52 % more players per tick.
+const HILBERT_GROUP_SIZE := 16
+# Zone grid for authority/interest fanout.  Each zone cell = AOI_RADIUS so a
+# 3×3 neighbor fetch covers the full AOI of every player in a zone.
+# Future: each zone → independent core or server (scale-out path).
+const ZONE_CELL_SIZE := AOI_RADIUS
+const ZONE_COLS := int(ceil((400.0) / ZONE_CELL_SIZE)) + 1  # ceil(400/60)+1 = 8
 const TICK_HZ = 30.0
 const PLAYERS_NEEDED = int(4)
 # Authority capacity TARGET: one single-threaded server must support at least this
@@ -156,6 +162,15 @@ static func _hilbert3d(nx: int, ny: int, nz: int) -> int:
 	return h
 
 # hilbertOfBox from HilbertBroadphase.lean: normalise to [0,1023]³ then hilbert3D.
+# Zone key for authority/interest partitioning.  Maps pos → flat zone index
+# (xi × ZONE_COLS + zi).  Players in the same zone are co-authority; players
+# in adjacent zones (±1) form the interest set (full AOI coverage because
+# ZONE_CELL_SIZE = AOI_RADIUS means a 3×3 zone square covers a full 2×AOI cube).
+static func _zone_key(pos: Vector3) -> int:
+	var xi := clampi(int((pos.x - SCENE_MIN.x) / ZONE_CELL_SIZE), 0, ZONE_COLS - 1)
+	var zi := clampi(int((pos.z - SCENE_MIN.z) / ZONE_CELL_SIZE), 0, ZONE_COLS - 1)
+	return xi * ZONE_COLS + zi
+
 static func _hilbert_code(pos: Vector3) -> int:
 	var nx := clampi(int((pos.x - SCENE_MIN.x) * 1024.0 / maxf(SCENE_MAX.x - SCENE_MIN.x, 1.0)), 0, 1023)
 	var ny := clampi(int((pos.y - SCENE_MIN.y) * 1024.0 / maxf(SCENE_MAX.y - SCENE_MIN.y, 1.0)), 0, 1023)
@@ -361,11 +376,13 @@ func step_tick() -> void:
 	# Follows LowerBound.lean: radix sort O(n) + group scan O(n+k).
 	# hilbert_prune_sound justifies skipping groups with disjoint AABBs.
 	if tick % 3 == 0 and (phase == "field" or phase == "hub"):
-		# Step 1: Hilbert codes — O(n)
+		# Step 1: Hilbert codes + authority zone tags — O(n).
+		# zone = _zone_key(pos): authority zone for future fanout sharding
+		# (each zone → independent core/server; 3×3 neighbor interest covers full AOI).
 		var entries: Array = []
 		for pid in players:
 			var pos: Vector3 = players[pid]["pos"]
-			entries.append({"code": _hilbert_code(pos), "pid": pid, "pos": pos})
+			entries.append({"code": _hilbert_code(pos), "pid": pid, "pos": pos, "zone": _zone_key(pos)})
 		# Step 2: radix sort on 30-bit codes — O(n)
 		entries = _radix_sort_hilbert(entries)
 		# Step 3: form groups by Hilbert prefix — O(n)
