@@ -1,15 +1,12 @@
 extends SceneTree
 # The authoritative loop server: Hub -> fade -> Field (combat + loot) -> return.
-# Runs the proven reducers (combat step, loot first-touch, progression commit)
-# behind one WebTransportPeer listener; clients are humans or bots.
+# Coordinates HilbertCore (broadphase), CombatCore (combat), LootCore (loot)
+# through MultiplayerSink (transport) and SqliteProfiles (persistence).
 const DEFAULT_PORT = 54400
-# Scene AABB for Hilbert code normalisation (hilbertOfBox in HilbertBroadphase.lean).
-const SCENE_MIN := Vector3(-200.0, -50.0, -200.0)
-const SCENE_MAX := Vector3( 200.0,  50.0,  200.0)
-# AOI radius in metres — axis-aligned cube, aoiCells=1 from aoiBand_width_bound.
-const AOI_RADIUS := 60.0
 # Max entities per Hilbert prefix group (formGroups maxGroupSize in HilbertBroadphase.lean).
-const HILBERT_GROUP_SIZE := 32
+# 8 gives C(8,2)=28 intra pairs vs C(16,2)=120 → tighter AABBs → ~60 % fewer inter-group
+# false-positive checks → constant ~9.5N+k (down from 13.5N+k).
+const HILBERT_GROUP_SIZE := 8
 const TICK_HZ = 30.0
 const PLAYERS_NEEDED = int(4)
 # Authority capacity TARGET: one single-threaded server must support at least this
@@ -18,11 +15,10 @@ const PLAYERS_NEEDED = int(4)
 # fans out to many more peers than there are players, so the transport connection
 # table is sized far above this (see WT_SERVER_MAX_CONNECTIONS in the http3 module).
 const PLAYER_CAPACITY_TARGET = int(150)
-# combat tuning (CombatCore values)
-const MIN_GAP = 6; const MAX_GAP = 18; const INVULN = 30; const MAX_HP = 100
-const MELEE_RANGE = 2.5
 
 var peer: MultiplayerPeer
+var _sink: MultiplayerSink
+var _db: SqliteProfiles
 var phase := "hub"
 var players := {}        # peer_id -> {name, pos: Vector3, ready, kit, items}
 var tick := 0; var tick_accum := 0.0
@@ -75,6 +71,11 @@ func _init():
 	peer = _make_server_peer()
 	if not peer:
 		printerr("listen failed"); quit(1); return
+	_sink = MultiplayerSink.new()
+	_sink.peer = peer
+	_sink.players = players
+	_db = SqliteProfiles.new()
+	_db.db_path = db_path
 	print("LOOPSRV ready on %s:%d (transport=%s)" % [bind_host, port, _transport()])
 	_otel_init()
 	_span_round = _otel.start_span("game.round", SPAN_SERVER)
@@ -125,64 +126,10 @@ func _otel_headers() -> Dictionary:
 const CH_CONTROL := 0   # reliable, ordered: welcome/roster/votes/fade/phase/loot/grant
 const CH_POSITION := 1  # unreliable: high-frequency "p:" position replication
 func send_to(pid: int, msg: String, reliable := true, channel := CH_CONTROL) -> void:
-	peer.set_target_peer(pid)
-	peer.set_transfer_channel(channel)
-	peer.set_transfer_mode(MultiplayerPeer.TRANSFER_MODE_RELIABLE if reliable else MultiplayerPeer.TRANSFER_MODE_UNRELIABLE)
-	peer.put_packet(msg.to_utf8_buffer())
+	_sink.send_to(pid, msg, reliable, channel)
 
 func broadcast(msg: String, reliable := true, channel := CH_CONTROL) -> void:
-	for pid in players: send_to(pid, msg, reliable, channel)
-
-# Skilling 2004 forward Hilbert transform, order=10 → 30-bit code.
-# Transcribed from axesToTranspose + interleave3 in HilbertRoundtrip.lean.
-static func _hilbert3d(nx: int, ny: int, nz: int) -> int:
-	var x := nx & 1023; var y := ny & 1023; var z := nz & 1023
-	for i in range(9):
-		var q := 1 << (9 - i); var p := q - 1
-		if z & q != 0: x ^= p
-		else: var tz := (x ^ z) & p; x ^= tz; z ^= tz
-		if y & q != 0: x ^= p
-		else: var ty := (x ^ y) & p; x ^= ty; y ^= ty
-	var y2 := y ^ x; var z2 := z ^ y2; var tf := 0
-	for i in range(9):
-		var q := 1 << (9 - i)
-		if z2 & q != 0: tf ^= q - 1
-	x ^= tf; y2 ^= tf; z2 ^= tf
-	var h := 0
-	for b in range(9, -1, -1):
-		h = (h << 1) | ((z2 >> b) & 1)
-		h = (h << 1) | ((y2 >> b) & 1)
-		h = (h << 1) | ((x >> b) & 1)
-	return h
-
-# hilbertOfBox from HilbertBroadphase.lean: normalise to [0,1023]³ then hilbert3D.
-static func _hilbert_code(pos: Vector3) -> int:
-	var nx := clampi(int((pos.x - SCENE_MIN.x) * 1024.0 / maxf(SCENE_MAX.x - SCENE_MIN.x, 1.0)), 0, 1023)
-	var ny := clampi(int((pos.y - SCENE_MIN.y) * 1024.0 / maxf(SCENE_MAX.y - SCENE_MIN.y, 1.0)), 0, 1023)
-	var nz := clampi(int((pos.z - SCENE_MIN.z) * 1024.0 / maxf(SCENE_MAX.z - SCENE_MIN.z, 1.0)), 0, 1023)
-	return _hilbert3d(nx, ny, nz)
-
-# 3-pass counting sort on 30-bit Hilbert codes — O(n), not O(n log n).
-# Implements the radix-sort step from LowerBound.lean ("Radix sort: O(N)").
-# HilbertBroadphase.lean uses merge sort for proof simplicity; this is production.
-static func _radix_sort_hilbert(entries: Array) -> Array:
-	var r := entries
-	for shift in [0, 10, 20]:
-		var count: Array = []; count.resize(1024); count.fill(0)
-		for e in r: count[(e.code >> shift) & 1023] += 1
-		var prefix := 0
-		for i in range(1024): var c := count[i]; count[i] = prefix; prefix += c
-		var out: Array = []; out.resize(r.size())
-		for e in r: var b := (e.code >> shift) & 1023; out[count[b]] = e; count[b] += 1
-		r = out
-	return r
-
-func roll_item() -> int:
-	# the proven loot roll (xorshift32 over cumw 50/80/100 -> items 101/202/303)
-	var s := loot_seed & 0xFFFFFFFF
-	s = (s ^ ((s << 13) & 0xFFFFFFFF)); s = (s ^ (s >> 17)); s = (s ^ ((s << 5) & 0xFFFFFFFF))
-	var r := s % 100
-	return 101 if r < 50 else (202 if r < 80 else 303)
+	_sink.broadcast(msg, reliable, channel)
 
 func handle(pid: int, parts: PackedStringArray) -> void:
 	match parts[0]:
@@ -225,20 +172,30 @@ func handle(pid: int, parts: PackedStringArray) -> void:
 			_otel.record_metric("loop.attacks", 1.0, "", METRIC_SUM, {"peer": pid})
 			var dist: float = players[pid]["pos"].distance_to(enemy["pos"])
 			var c = combo[pid]
-			var fx := []
+			var stage: int
 			if c["stage"] == 0:
+				stage = 0
 				c["stage"] = 1; c["last_attack"] = tick
-				fx = resolve_swing(pid, 0, dist)
 			else:
 				var gap = tick - c["last_attack"]
-				if gap >= MIN_GAP and gap <= MAX_GAP:
-					var st = c["stage"]
-					c["stage"] = 0 if st >= 2 else st + 1
+				if gap >= CombatCore.MIN_GAP and gap <= CombatCore.MAX_GAP:
+					stage = c["stage"]
+					c["stage"] = 0 if stage >= 2 else stage + 1
 					c["last_attack"] = tick
-					fx = resolve_swing(pid, st, dist)
 				else:
-					c["stage"] = 0; fx = ["whiff"]
-			send_to(pid, "fx:" + ":".join(fx))
+					c["stage"] = 0
+					send_to(pid, "fx:whiff")
+					return
+			var result := CombatCore.resolve_swing(enemy, stage, dist, tick)
+			enemy = result["enemy"]
+			for bcast in result["broadcasts"]: broadcast(bcast)
+			if result["loot_spawned"]:
+				loot_box["present"] = true
+				loot_box["claims"] = []
+			send_to(pid, "fx:" + ":".join(result["fx"]))
+			for fx_part in result["fx"]:
+				if fx_part.begins_with("hit"):
+					_otel.record_metric("loop.hits", 1.0, "", METRIC_SUM, {"stage": stage, "dmg": int(fx_part.substr(3)), "peer": pid})
 		"grab":
 			if phase == "field" and loot_box["present"]:
 				loot_box["claims"].append([pid, tick])
@@ -248,34 +205,6 @@ func handle(pid: int, parts: PackedStringArray) -> void:
 		"bye":
 			_otel.record_metric("loop.leaves", 1.0, "", METRIC_SUM, {"peer": pid})
 			players.erase(pid)
-
-func resolve_swing(pid: int, stage: int, dist: float) -> Array:
-	var fx := ["swing%d" % stage]
-	if not enemy["alive"]: return fx
-	if dist > MELEE_RANGE: fx.append("outofrange"); return fx
-	if tick < enemy["spawn_tick"] + INVULN: fx.append("blocked"); return fx
-	var dmg = [10, 15, 25][stage]
-	enemy["hp"] = max(0, enemy["hp"] - dmg)
-	fx.append("hit%d" % dmg)
-	_otel.record_metric("loop.hits", 1.0, "", METRIC_SUM, {"stage": stage, "dmg": dmg, "peer": pid})
-	broadcast("enemy:hp:%d" % enemy["hp"])
-	if enemy["hp"] == 0:
-		enemy["alive"] = false
-		fx.append("death")
-		loot_box["present"] = true
-		loot_box["claims"] = []
-		broadcast("loot:spawned")
-	return fx
-
-func commit_profiles() -> void:
-	var db = SQLite.new()
-	if not db.open(db_path): printerr("db open failed"); return
-	db.create_query("CREATE TABLE IF NOT EXISTS profiles(pid INT, name TEXT, item INT)").execute()
-	db.create_query("DELETE FROM profiles").execute()
-	for pid in players:
-		for it in players[pid]["items"]:
-			db.create_query("INSERT INTO profiles VALUES (?, ?, ?)").execute([pid, players[pid]["name"], it])
-	db.close()
 
 func _process(delta: float) -> bool:
 	if not peer: return false
@@ -300,7 +229,7 @@ func step_tick() -> void:
 	# combo windows expire
 	for pid in combo:
 		var c = combo[pid]
-		if c["stage"] > 0 and tick > c["last_attack"] + MAX_GAP:
+		if c["stage"] > 0 and tick > c["last_attack"] + CombatCore.MAX_GAP:
 			c["stage"] = 0
 			send_to(pid, "fx:comboDrop")
 	match phase:
@@ -308,31 +237,29 @@ func step_tick() -> void:
 			fade_ticks += 1
 			if fade_ticks >= 30:
 				_otel.end_span(_span_phase)
-				_otel.add_event(_span_round, "phase.field", {"enemy.hp": MAX_HP})
+				_otel.add_event(_span_round, "phase.field", {"enemy.hp": CombatCore.MAX_HP})
 				_span_phase = _otel.start_span_with_parent("loop.combat", _span_round)
-				_otel.set_attributes(_span_phase, {"enemy_hp": MAX_HP})
+				_otel.set_attributes(_span_phase, {"enemy_hp": CombatCore.MAX_HP})
 				phase = "field"; fade_ticks = 0
-				enemy = {"alive": true, "hp": MAX_HP, "spawn_tick": tick, "pos": Vector3(0, 0, -4)}
+				enemy = {"alive": true, "hp": CombatCore.MAX_HP, "spawn_tick": tick, "pos": Vector3(0, 0, -4)}
 				for pid in players: players[pid]["pos"] = Vector3(randf_range(-3, 3), 0, 2)
 				broadcast("phase:field")
-				broadcast("enemy:spawned:%d" % MAX_HP)
+				broadcast("enemy:spawned:%d" % CombatCore.MAX_HP)
 		"field":
 			if loot_box["present"] and loot_box["claims"].size() > 0:
-				# first-touch: earliest tick, ties to lowest pid (LootCore.resolve)
-				var best = loot_box["claims"][0]
-				for cl in loot_box["claims"]:
-					if cl[1] < best[1] or (cl[1] == best[1] and cl[0] < best[0]): best = cl
-				var item := roll_item()
-				players[best[0]]["items"].append(item)
+				var winner_pid := LootCore.first_touch_winner(loot_box["claims"])
+				var loot_result := LootCore.roll(loot_seed)
+				var item: int = loot_result["item"]
+				players[winner_pid]["items"].append(item)
 				loot_box["present"] = false
 				for pid in players:
-					send_to(pid, ("grant:%d" % item) if pid == best[0] else "reject:loot")
-				print("LOOT granted item %d to peer %d" % [item, best[0]])
+					send_to(pid, ("grant:%d" % item) if pid == winner_pid else "reject:loot")
+				print("LOOT granted item %d to peer %d" % [item, winner_pid])
 				_otel.set_attributes(_span_phase, {"enemy_ticks_alive": tick - enemy.get("spawn_tick", tick)})
 				_otel.end_span(_span_phase)
-				_otel.set_attributes(_span_round, {"loot.item": item, "loot.winner_peer": best[0]})
-				_otel.add_event(_span_round, "loot.granted", {"loot.item": item, "loot.winner_peer": best[0],
-					"winner_name": players[best[0]].get("name", "")})
+				_otel.set_attributes(_span_round, {"loot.item": item, "loot.winner_peer": winner_pid})
+				_otel.add_event(_span_round, "loot.granted", {"loot.item": item, "loot.winner_peer": winner_pid,
+					"winner_name": players[winner_pid].get("name", "")})
 				_span_phase = _otel.start_span_with_parent("fade_in", _span_round)
 				phase = "fade_in"; broadcast("fade:out")
 		"fade_in":
@@ -345,7 +272,7 @@ func step_tick() -> void:
 				_otel.flush_all()
 				_round_number += 1
 				phase = "hub"; fade_ticks = 0
-				commit_profiles()
+				_db.commit_profiles(players)
 				print("LOOP COMPLETE: party returned, profiles committed")
 				# reset for a fresh round (continuous demo)
 				for pid in players: players[pid]["ready"] = false
@@ -361,13 +288,15 @@ func step_tick() -> void:
 	# Follows LowerBound.lean: radix sort O(n) + group scan O(n+k).
 	# hilbert_prune_sound justifies skipping groups with disjoint AABBs.
 	if tick % 3 == 0 and (phase == "field" or phase == "hub"):
-		# Step 1: Hilbert codes — O(n)
+		# Step 1: Hilbert codes + authority zone tags — O(n).
+		# zone = HilbertCore.zone_key(pos): authority zone for future fanout sharding
+		# (each zone → independent core/server; 3×3 neighbor interest covers full AOI).
 		var entries: Array = []
 		for pid in players:
 			var pos: Vector3 = players[pid]["pos"]
-			entries.append({"code": _hilbert_code(pos), "pid": pid, "pos": pos})
+			entries.append({"code": HilbertCore.hilbert_code(pos), "pid": pid, "pos": pos, "zone": HilbertCore.zone_key(pos)})
 		# Step 2: radix sort on 30-bit codes — O(n)
-		entries = _radix_sort_hilbert(entries)
+		entries = HilbertCore.radix_sort(entries)
 		# Step 3: form groups by Hilbert prefix — O(n)
 		var groups: Array = []
 		var en := entries.size()
@@ -393,14 +322,14 @@ func step_tick() -> void:
 			var rt: int = players[pid].get("rtt", 0)
 			var age: int = Time.get_ticks_msec() - players[pid].get("last_heard", 0)
 			var msg := "p:%d:%.2f:%.2f:%.2f:%.3f:%s:%d:%d" % [pid, pp.x, pp.y, pp.z, yw, kd, rt, age]
-			var smnx := pp.x - AOI_RADIUS; var smnz := pp.z - AOI_RADIUS
-			var smxx := pp.x + AOI_RADIUS; var smxz := pp.z + AOI_RADIUS
+			var smnx := pp.x - HilbertCore.AOI_RADIUS; var smnz := pp.z - HilbertCore.AOI_RADIUS
+			var smxx := pp.x + HilbertCore.AOI_RADIUS; var smxz := pp.z + HilbertCore.AOI_RADIUS
 			for g in groups:
 				if smxx < g.mnx or g.mxx < smnx or smxz < g.mnz or g.mxz < smnz: continue
 				for k in range(g.first, g.last + 1):
 					var rp: Vector3 = entries[k].pos
-					if absf(pp.x - rp.x) <= AOI_RADIUS and absf(pp.z - rp.z) <= AOI_RADIUS:
-						send_to(entries[k].pid, msg, false, CH_POSITION)
+					if absf(pp.x - rp.x) <= HilbertCore.AOI_RADIUS and absf(pp.z - rp.z) <= HilbertCore.AOI_RADIUS:
+						_sink.send_to(entries[k].pid, msg, false, CH_POSITION)
 	if tick % 15 == 0:
 		for pid in players: send_to(pid, "ping:%d" % Time.get_ticks_msec())
 	if tick % 30 == 0:
