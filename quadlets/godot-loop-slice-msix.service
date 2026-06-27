@@ -1,0 +1,26 @@
+# Oneshot systemd user unit: export the Godot Windows builds and pack both
+# client and server MSIX packages.
+#
+# Install with:  just install-msix-service
+# Start:         systemctl --user start  godot-loop-slice-msix
+# Re-run:        systemctl --user restart godot-loop-slice-msix
+# Logs:          journalctl --user -u godot-loop-slice-msix -f
+#
+# @WORKING_DIR@ is substituted to the absolute repo path by install-msix-service.
+
+[Unit]
+Description=Build loop-slice Windows MSIX packages (export + pack + sign)
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=0
+WorkingDirectory=@WORKING_DIR@
+ExecStart=just build-msix
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=godot-loop-slice-msix
+
+[Install]
+WantedBy=default.target
