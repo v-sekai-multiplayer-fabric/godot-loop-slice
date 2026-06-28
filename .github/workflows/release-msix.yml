@@ -98,9 +98,9 @@ jobs:
           # Locate the editor + template_release exe inside the unpacked zips
           # (editors/ from the editor zip, tpz/ from the template zip). Exclude
           # the .console.exe console wrapper.
-          GODOT=$(find tools -type f -name 'godot.windows.editor*.x86_64.exe' \
+          GODOT=$(find tools -type f -name 'godot.windows.editor*.exe' \
             ! -name '*.console.exe' -print -quit)
-          tmpl=$(find templates -type f -name 'godot.windows.template_release*.x86_64.exe' \
+          tmpl=$(find templates -type f -name 'godot.windows.template_release*.exe' \
             ! -name '*.console.exe' -print -quit)
           if [ -z "$GODOT" ] || [ -z "$tmpl" ]; then
             echo "::error::missing engine binaries — editor='$GODOT' template='$tmpl'"
@@ -128,7 +128,7 @@ jobs:
           set -euo pipefail
           # export_presets.cfg already had custom_template/release rewritten to
           # the unpacked template by the client export step above.
-          GODOT=$(find tools -type f -name 'godot.windows.editor*.x86_64.exe' \
+          GODOT=$(find tools -type f -name 'godot.windows.editor*.exe' \
             ! -name '*.console.exe' -print -quit)
           GODOT="$GITHUB_WORKSPACE/$GODOT"
           mkdir -p build/windows-server
