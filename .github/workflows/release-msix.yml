@@ -19,13 +19,13 @@ on:
         description: godot-images release tag providing the merged editor + double templates
         required: true
       editor_asset:
-        description: Windows editor asset name in that release
+        description: Windows editor zip asset name in that release
         required: true
-        default: godot.windows.editor.double.x86_64.exe
+        default: windows-editor.zip
       windows_template_asset:
-        description: Windows double export template asset name
+        description: Windows double export template zip asset name
         required: true
-        default: godot.windows.template_release.double.x86_64.exe
+        default: windows-template-release.zip
   push:
     tags: ["v*"]
 
@@ -59,8 +59,8 @@ jobs:
             version="${core}.${build_n}"
             godot_tag=$(gh release list -R v-sekai-multiplayer-fabric/godot-images \
               --limit 1 --json tagName -q '.[0].tagName')
-            editor_asset="godot.windows.editor.double.x86_64.exe"
-            windows_template_asset="godot.windows.template_release.double.x86_64.exe"
+            editor_asset="windows-editor.zip"
+            windows_template_asset="windows-template-release.zip"
           else
             version="${{ github.event.inputs.version }}"
             godot_tag="${{ github.event.inputs.godot_images_tag }}"
@@ -77,6 +77,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # godot-images ships each platform's build as a zip of the editors/
+          # (editor target) and tpz/ (template target) trees, not a bare .exe.
+          # Download both zips and unpack them; the export step locates the
+          # actual godot.windows.*.exe inside.
           mkdir -p tools templates
           gh release download "${{ steps.inputs.outputs.godot_tag }}" \
             -R v-sekai-multiplayer-fabric/godot-images \
@@ -84,12 +88,28 @@ jobs:
           gh release download "${{ steps.inputs.outputs.godot_tag }}" \
             -R v-sekai-multiplayer-fabric/godot-images \
             -p "${{ steps.inputs.outputs.windows_template_asset }}" -D templates
+          unzip -q "tools/${{ steps.inputs.outputs.editor_asset }}" -d tools
+          unzip -q "templates/${{ steps.inputs.outputs.windows_template_asset }}" -d templates
 
       - name: Export Windows client build
         shell: bash
         run: |
-          GODOT="$GITHUB_WORKSPACE/tools/${{ steps.inputs.outputs.editor_asset }}"
-          tmpl="$GITHUB_WORKSPACE/templates/${{ steps.inputs.outputs.windows_template_asset }}"
+          set -euo pipefail
+          # Locate the editor + template_release exe inside the unpacked zips
+          # (editors/ from the editor zip, tpz/ from the template zip). Exclude
+          # the .console.exe console wrapper.
+          GODOT=$(find tools -type f -name 'godot.windows.editor*.x86_64.exe' \
+            ! -name '*.console.exe' -print -quit)
+          tmpl=$(find templates -type f -name 'godot.windows.template_release*.x86_64.exe' \
+            ! -name '*.console.exe' -print -quit)
+          if [ -z "$GODOT" ] || [ -z "$tmpl" ]; then
+            echo "::error::missing engine binaries — editor='$GODOT' template='$tmpl'"
+            echo "tools tree:"; find tools -name '*.exe'; echo "templates tree:"; find templates -name '*.exe'
+            exit 1
+          fi
+          GODOT="$GITHUB_WORKSPACE/$GODOT"
+          tmpl="$GITHUB_WORKSPACE/$tmpl"
+          echo "editor=$GODOT"; echo "template=$tmpl"
           sed -i "s|custom_template/release=.*|custom_template/release=\"$tmpl\"|" export_presets.cfg
           mkdir -p build/windows
           "$GODOT" --headless --import . || true
@@ -105,7 +125,12 @@ jobs:
       - name: Export Windows Dedicated Server build
         shell: bash
         run: |
-          GODOT="$GITHUB_WORKSPACE/tools/${{ steps.inputs.outputs.editor_asset }}"
+          set -euo pipefail
+          # export_presets.cfg already had custom_template/release rewritten to
+          # the unpacked template by the client export step above.
+          GODOT=$(find tools -type f -name 'godot.windows.editor*.x86_64.exe' \
+            ! -name '*.console.exe' -print -quit)
+          GODOT="$GITHUB_WORKSPACE/$GODOT"
           mkdir -p build/windows-server
           "$GODOT" --headless --export-release "Windows Dedicated Server" \
             build/windows-server/loop-slice-server.exe
