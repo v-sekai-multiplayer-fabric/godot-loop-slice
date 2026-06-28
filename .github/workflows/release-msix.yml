@@ -107,8 +107,13 @@ jobs:
             echo "tools tree:"; find tools -name '*.exe'; echo "templates tree:"; find templates -name '*.exe'
             exit 1
           fi
-          GODOT="$GITHUB_WORKSPACE/$GODOT"
-          tmpl="$GITHUB_WORKSPACE/$tmpl"
+          # Use forward slashes: GITHUB_WORKSPACE is a backslash Windows path
+          # (D:\a\...), and Godot's .cfg string parser treats '\a','\g',... as
+          # escape sequences, so a backslash custom_template/release path is
+          # silently corrupted ("Custom release template not found.").
+          WS="${GITHUB_WORKSPACE//\\//}"
+          GODOT="$WS/$GODOT"
+          tmpl="$WS/$tmpl"
           echo "editor=$GODOT"; echo "template=$tmpl"
           sed -i "s|custom_template/release=.*|custom_template/release=\"$tmpl\"|" export_presets.cfg
           mkdir -p build/windows
@@ -130,7 +135,7 @@ jobs:
           # the unpacked template by the client export step above.
           GODOT=$(find tools -type f -name 'godot.windows.editor*.exe' \
             ! -name '*.console.exe' -print -quit)
-          GODOT="$GITHUB_WORKSPACE/$GODOT"
+          GODOT="${GITHUB_WORKSPACE//\\//}/$GODOT"
           mkdir -p build/windows-server
           "$GODOT" --headless --export-release "Windows Dedicated Server" \
             build/windows-server/loop-slice-server.exe
