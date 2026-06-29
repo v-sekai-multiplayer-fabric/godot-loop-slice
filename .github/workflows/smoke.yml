@@ -4,8 +4,11 @@
 #
 # Runs from source, so it needs the merged double-precision EDITOR (it owns the
 # WebTransport + SQLite modules the project uses); fetch it from a godot-images
-# release, the same asset the packaging export uses. Defaults to that release's
-# latest when no tag is given.
+# release with curl (no gh), the same lineage the packaging export uses.
+#
+# NB: the current godot-images editor ships zipped as linux-editor.zip (the bare
+# godot.linuxbsd.editor.double.x86_64 only exists in older dev.3-dev.6 releases),
+# and the "latest" tag is incomplete. Pin to a 6-asset release such as 0.1.0-dev.8.
 name: Smoke
 
 on:
@@ -15,13 +18,13 @@ on:
   workflow_dispatch:
     inputs:
       godot_images_tag:
-        description: godot-images release tag providing the merged editor (blank = latest)
+        description: godot-images release tag providing the merged editor
         required: false
-        default: ""
+        default: "0.1.0-dev.8"
       editor_asset:
-        description: Linux double editor asset name in that release
+        description: Linux double editor asset name in that release (.zip is unpacked)
         required: false
-        default: godot.linuxbsd.editor.double.x86_64
+        default: linux-editor.zip
 
 permissions:
   contents: read
@@ -30,24 +33,31 @@ jobs:
   smoke:
     runs-on: ubuntu-latest
     env:
-      EDITOR_ASSET: ${{ github.event.inputs.editor_asset || 'godot.linuxbsd.editor.double.x86_64' }}
+      GODOT_IMAGES_TAG: ${{ github.event.inputs.godot_images_tag || '0.1.0-dev.8' }}
+      EDITOR_ASSET: ${{ github.event.inputs.editor_asset || 'linux-editor.zip' }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: Fetch merged double editor from godot-images
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.event.inputs.godot_images_tag }}
+      - name: Fetch merged double editor from godot-images (curl, no gh)
         run: |
           mkdir -p tools
-          # No tag -> gh downloads the latest release's assets.
-          gh release download $TAG -R v-sekai-multiplayer-fabric/godot-images \
-            -p "$EDITOR_ASSET" -D tools
-          chmod +x "tools/$EDITOR_ASSET"
+          base="https://github.com/v-sekai-multiplayer-fabric/godot-images/releases/download/${GODOT_IMAGES_TAG}"
+          curl -fL --retry 3 "${base}/${EDITOR_ASSET}" -o "tools/${EDITOR_ASSET}"
+          if [[ "$EDITOR_ASSET" == *.zip ]]; then
+            unzip -q "tools/${EDITOR_ASSET}" -d tools/editor
+            # locate the editor binary regardless of the zip's internal nesting
+            godot=$(find tools/editor -type f -name 'godot.linuxbsd*editor*' \
+                      ! -name '*.zip' -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2)
+            [ -n "$godot" ] || { echo "::error::no editor binary in ${EDITOR_ASSET}"; exit 1; }
+          else
+            godot="tools/${EDITOR_ASSET}"
+          fi
+          chmod +x "$godot"
+          echo "GODOT=${GITHUB_WORKSPACE}/${godot}" >> "$GITHUB_ENV"
+          echo "using editor: $godot"
 
       - name: Import project (build .godot cache)
         run: |
-          GODOT="$GITHUB_WORKSPACE/tools/$EDITOR_ASSET"
           # --import resolves res:// and writes the import cache a clean checkout lacks.
           # This editor build's MCP plugin segfaults at *exit* (it probes adb for a
           # Quest) AFTER the import work is done, so tolerate a non-zero exit and gate
@@ -59,4 +69,4 @@ jobs:
           echo "import cache present:"; ls -la .godot | head
 
       - name: Run playable-loop smoke (server + 4 bots)
-        run: GODOT="$GITHUB_WORKSPACE/tools/$EDITOR_ASSET" ./smoke.sh
+        run: ./smoke.sh

@@ -3,3 +3,5 @@ build/
 *.db
 run/
 /packaging/msix/
+__pycache__/
+*.pyc
