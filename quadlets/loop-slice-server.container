@@ -1,0 +1,21 @@
+[Unit]
+Description=loop-slice headless game server (loot-action vertical slice)
+Documentation=https://github.com/v-sekai-multiplayer-fabric/godot-loop-slice
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/v-sekai-multiplayer-fabric/loop-slice-server:latest
+ContainerName=loop-slice-server
+Volume=/var/lib/loop-slice:/var/lib/loop-slice:Z
+EnvironmentFile=/etc/loop-slice/env
+# ENet/UDP authoritative listener. Matches LOOP_PORT in the env file.
+PublishPort=54400:54400/udp
+
+[Service]
+Restart=always
+RestartSec=10
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target default.target
