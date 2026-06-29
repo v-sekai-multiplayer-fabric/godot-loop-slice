@@ -36,7 +36,7 @@ jobs:
       GODOT_IMAGES_TAG: ${{ github.event.inputs.godot_images_tag || '0.1.0-dev.8' }}
       EDITOR_ASSET: ${{ github.event.inputs.editor_asset || 'linux-editor.zip' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Fetch merged double editor from godot-images (curl, no gh)
         run: |
