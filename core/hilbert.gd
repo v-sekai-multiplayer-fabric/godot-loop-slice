@@ -51,8 +51,8 @@ static func radix_sort(entries: Array) -> Array:
 		var count: Array = []; count.resize(1024); count.fill(0)
 		for e in r: count[(e.code >> shift) & 1023] += 1
 		var prefix := 0
-		for i in range(1024): var c := count[i]; count[i] = prefix; prefix += c
+		for i in range(1024): var c: int = count[i]; count[i] = prefix; prefix += c
 		var out: Array = []; out.resize(r.size())
-		for e in r: var b := (e.code >> shift) & 1023; out[count[b]] = e; count[b] += 1
+		for e in r: var b: int = (e.code >> shift) & 1023; out[count[b]] = e; count[b] += 1
 		r = out
 	return r

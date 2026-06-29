@@ -12,20 +12,6 @@ The reducers transcribe the proven Lean cores
 [progression](https://github.com/v-sekai-multiplayer-fabric/progression)), whose
 wire parities pin the behavior.
 
-## Current state
-
-Verified in this repo. The engine is not run here, so the smoke's runtime pass is
-not asserted.
-
-- Two cores are transcribed as named resolvers wired into the server: combat
-  (`core/combat.gd`) and loot (`core/loot.gd`). Progression is an inline inventory
-  append committed through the SQLite adapter (`adapters/sqlite_profiles.gd`)
-  rather than a transcribed reducer, and presence runs through a Hilbert interest
-  core (`core/hilbert.gd`) and a multiplayer sink rather than a named presence core.
-- Persistence is SQLite. There is no CockroachDB path, and there is no budgeter core.
-- `smoke.sh` asserts exactly one grant and, when `sqlite3` is available, exactly
-  one committed profile row, verifying the persistence round trip.
-
 ## Play (flatscreen)
 
 ```sh
