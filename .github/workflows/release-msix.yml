@@ -1,5 +1,5 @@
-# Build + sign the loop-slice client and server MSIX packages via packaging/build_msix.py.
-# That one cross-platform script downloads the merged "double" editor + Windows template from
+# Build + sign the loop-slice client and server MSIX packages via packaging/build_msix.exs.
+# That Elixir script downloads the merged "double" editor + Windows template from
 # v-sekai-multiplayer-fabric/godot-images, exports both Windows builds, and packs+signs the MSIX
 # with packaging/msix/pack.ps1 + packaging/msix-server/pack-server.ps1 (Windows SDK).
 #
@@ -34,9 +34,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: erlef/setup-beam@v1
         with:
-          python-version: "3.12"
+          otp-version: "27"
+          elixir-version: "1.18"
 
       - name: Resolve version + godot-images tag
         id: inputs
@@ -77,13 +78,11 @@ jobs:
           if ("${{ steps.cert.outputs.pfx }}") {
             $pfx = @("--pfx", "${{ steps.cert.outputs.pfx }}", "--pfx-pass", "${{ secrets.LOOP_PFX_PASSWORD }}")
           }
-          python packaging/build_msix.py `
-            --tag "${{ steps.inputs.outputs.godot_tag }}" `
-            --version "${{ steps.inputs.outputs.version }}" `
-            --stage "$env:RUNNER_TEMP\msix" @pfx
+          $stage = "$env:RUNNER_TEMP\msix"
+          elixir packaging/build_msix.exs --tag "${{ steps.inputs.outputs.godot_tag }}" --version "${{ steps.inputs.outputs.version }}" --stage "$stage" @pfx
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force dist | Out-Null
-          Copy-Item "$env:RUNNER_TEMP\msix\project\dist\*.msix" dist\
+          Copy-Item "$stage\project\dist\*.msix" dist/
           Get-ChildItem dist
 
       - uses: actions/upload-artifact@v5
