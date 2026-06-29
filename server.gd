@@ -277,6 +277,12 @@ func step_tick() -> void:
 				_round_number += 1
 				phase = "hub"; fade_ticks = 0
 				_db.commit_profiles(players)
+				# Step 6: the hub reflects the new inventory — send each player their
+				# committed items before phase:hub so the client has them on return.
+				for ipid in players:
+					var inv := PackedStringArray()
+					for it in players[ipid]["items"]: inv.append(str(it))
+					send_to(ipid, "inventory:" + ",".join(inv))
 				print("LOOP COMPLETE: party returned, profiles committed")
 				# reset for a fresh round (continuous demo)
 				for pid in players: players[pid]["ready"] = false

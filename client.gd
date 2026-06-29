@@ -61,6 +61,7 @@ var fade: ColorRect
 var hud: Label
 var t0 := 0
 var got_grant := false; var got_reject := false; var loop_done := false
+var inventory: PackedStringArray = PackedStringArray()   # committed items, synced on return to hub
 var bot_attack_timer := 0.0
 var send_accum := 0.0
 
@@ -259,12 +260,12 @@ func handle(msg: String) -> void:
 					hud.text = "bot %s: new round" % bot_name
 				elif bot:
 					var verdict := "GRANT" if got_grant else ("REJECT" if got_reject else "NONE")
-					print("BOT %s LOOP COMPLETE outcome=%s" % [bot_name, verdict])
+					print("BOT %s LOOP COMPLETE outcome=%s inventory=%s" % [bot_name, verdict, ",".join(inventory)])
 					_put("bye:x")
 					get_tree().quit(0)
 				else:
 					loop_done = true
-					hud.text = "back in hub — loop complete"
+					hud.text = "back in hub — loop complete — inventory: %s" % ",".join(inventory)
 		"enemy":
 			if p[1] == "spawned":
 				enemy_node.visible = true; enemy_hp = 100
@@ -281,6 +282,8 @@ func handle(msg: String) -> void:
 			hud.text = "GRANTED item %s!" % p[1]
 		"reject":
 			got_reject = true; loot_node.visible = false
+		"inventory":
+			inventory = (p[1].split(",") if p.size() > 1 and p[1] != "" else PackedStringArray())
 		"ping":
 			_put("pong:%s" % p[1])
 		"left":

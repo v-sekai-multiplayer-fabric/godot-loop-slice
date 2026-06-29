@@ -27,6 +27,14 @@ for i in 1 2 3 4; do
 done
 grep -E 'LOOT granted|LOOP COMPLETE' /tmp/loop_srv.log
 [ "$grants" -eq 1 ] || { echo "FAIL: expected exactly 1 grant, got $grants"; exit 1; }
+# Loop closure (step 6): the granted item must reach the winning client (inventory sync).
+granted_item=$(grep -oE 'LOOT granted item [0-9]+' /tmp/loop_srv.log | head -1 | grep -oE '[0-9]+$')
+[ -n "$granted_item" ] || { echo "FAIL: no 'LOOT granted item' in server log"; exit 1; }
+win_inv=$(grep -h 'outcome=GRANT' /tmp/loop_bot*.log | head -1 | sed -n 's/.*inventory=\([0-9,]*\).*/\1/p')
+echo "--- winner client inventory: '${win_inv}' (granted item ${granted_item})"
+echo ",${win_inv}," | grep -q ",${granted_item}," || { echo "FAIL: winner client inventory ('${win_inv}') missing granted item ${granted_item}"; exit 1; }
+nonempty=$(grep -h 'LOOP COMPLETE' /tmp/loop_bot*.log | grep -cE 'inventory=[0-9]' || true)
+[ "$nonempty" -eq 1 ] || { echo "FAIL: expected exactly 1 bot with a non-empty inventory, got $nonempty"; exit 1; }
 # A correct grant must not coexist with GDScript errors on the server: that is what
 # hid the hilbert.gd compile failure (the loot path does not use Hilbert, so the grant
 # still landed while interest management was broken every tick).
@@ -40,7 +48,9 @@ if command -v sqlite3 >/dev/null; then
   sqlite3 "$DB" 'SELECT * FROM profiles;'
   rows=$(sqlite3 "$DB" 'SELECT count(*) FROM profiles;')
   [ "$rows" -eq 1 ] || { echo "FAIL: expected exactly 1 committed profile row, got $rows"; exit 1; }
+  db_item=$(sqlite3 "$DB" 'SELECT item FROM profiles LIMIT 1;')
+  [ "$db_item" = "$granted_item" ] || { echo "FAIL: committed item ($db_item) != granted item ($granted_item)"; exit 1; }
 else
   echo "WARN: sqlite3 not found; persistence round trip not asserted"
 fi
-echo "PLAYABLE LOOP SMOKE PASS: full slice ran end to end with exactly one grant"
+echo "PLAYABLE LOOP SMOKE PASS: full slice ran end to end with exactly one grant; the granted item reached the winning client and the committed row"
