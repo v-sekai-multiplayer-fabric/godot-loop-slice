@@ -27,5 +27,12 @@ for i in 1 2 3 4; do
 done
 grep -E 'LOOT granted|LOOP COMPLETE' /tmp/loop_srv.log
 [ "$grants" -eq 1 ] || { echo "FAIL: expected exactly 1 grant, got $grants"; exit 1; }
-command -v sqlite3 >/dev/null && { echo "--- committed profiles:"; sqlite3 "$DB" 'SELECT * FROM profiles;'; }
+if command -v sqlite3 >/dev/null; then
+  echo "--- committed profiles:"
+  sqlite3 "$DB" 'SELECT * FROM profiles;'
+  rows=$(sqlite3 "$DB" 'SELECT count(*) FROM profiles;')
+  [ "$rows" -eq 1 ] || { echo "FAIL: expected exactly 1 committed profile row, got $rows"; exit 1; }
+else
+  echo "WARN: sqlite3 not found; persistence round trip not asserted"
+fi
 echo "PLAYABLE LOOP SMOKE PASS: full slice ran end to end with exactly one grant"

@@ -23,8 +23,8 @@ not asserted.
   rather than a transcribed reducer, and presence runs through a Hilbert interest
   core (`core/hilbert.gd`) and a multiplayer sink rather than a named presence core.
 - Persistence is SQLite. There is no CockroachDB path, and there is no budgeter core.
-- `smoke.sh` asserts exactly one grant; the committed profile row is printed
-  without an assertion on it.
+- `smoke.sh` asserts exactly one grant and, when `sqlite3` is available, exactly
+  one committed profile row, verifying the persistence round trip.
 
 ## Play (flatscreen)
 
