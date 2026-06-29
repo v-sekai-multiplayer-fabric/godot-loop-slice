@@ -217,7 +217,7 @@ defmodule BuildMsix do
     {o, _, _} =
       OptionParser.parse(argv,
         strict: [tag: :string, version: :string, stage: :string, skip_server: :boolean,
-                 pfx: :string, pfx_pass: :string, force: :boolean]
+                 exe_only: :boolean, pfx: :string, pfx_pass: :string, force: :boolean]
       )
 
     tag = o[:tag] || @default_tag
@@ -225,6 +225,7 @@ defmodule BuildMsix do
     stage = o[:stage] || default_stage()
     force = o[:force] || false
     skip_server = o[:skip_server] || false
+    exe_only = o[:exe_only] || false
     pfx = o[:pfx]
     pfx_pass = o[:pfx_pass]
 
@@ -261,27 +262,36 @@ defmodule BuildMsix do
 
     IO.puts("\n[4/5] export Windows builds (headless)")
     run(to_string(editor), ["--headless", "--import", "."], cd: project)
-    export(editor, project, "Windows Desktop", "build/windows/loop-slice.exe")
+    client_exe = export(editor, project, "Windows Desktop", "build/windows/loop-slice.exe")
 
-    unless skip_server do
-      export(editor, project, "Windows Dedicated Server", "build/windows-server/loop-slice-server.exe")
-    end
+    server_exe =
+      unless skip_server do
+        export(editor, project, "Windows Dedicated Server", "build/windows-server/loop-slice-server.exe")
+      end
 
-    IO.puts("\n[5/5] pack + sign MSIX")
-    ps = powershell() || die("no PowerShell (powershell.exe / pwsh) for the pack stage")
-    File.mkdir_p!(dist)
+    if exe_only do
+      # Plain-download demo path: stop after the exes -- no Windows SDK, no cert.
+      IO.puts("\nDONE (exe-only). Windows builds:")
+      for exe <- Enum.reject([client_exe, server_exe], &is_nil/1) do
+        IO.puts("  #{exe}  (#{File.stat!(exe).size} B)")
+      end
+    else
+      IO.puts("\n[5/5] pack + sign MSIX")
+      ps = powershell() || die("no PowerShell (powershell.exe / pwsh) for the pack stage")
+      File.mkdir_p!(dist)
 
-    pack(ps, Path.join([project, "packaging", "msix", "pack.ps1"]),
-      Path.join([project, "build", "windows"]), version, dist, project, pfx, pfx_pass)
+      pack(ps, Path.join([project, "packaging", "msix", "pack.ps1"]),
+        Path.join([project, "build", "windows"]), version, dist, project, pfx, pfx_pass)
 
-    unless skip_server do
-      pack(ps, Path.join([project, "packaging", "msix-server", "pack-server.ps1"]),
-        Path.join([project, "build", "windows-server"]), version, dist, project, pfx, pfx_pass)
-    end
+      unless skip_server do
+        pack(ps, Path.join([project, "packaging", "msix-server", "pack-server.ps1"]),
+          Path.join([project, "build", "windows-server"]), version, dist, project, pfx, pfx_pass)
+      end
 
-    IO.puts("\nDONE. MSIX outputs:")
-    for m <- Path.wildcard(Path.join(dist, "*.msix")) |> Enum.sort() do
-      IO.puts("  #{m}  (#{File.stat!(m).size} B)")
+      IO.puts("\nDONE. MSIX outputs:")
+      for m <- Path.wildcard(Path.join(dist, "*.msix")) |> Enum.sort() do
+        IO.puts("  #{m}  (#{File.stat!(m).size} B)")
+      end
     end
   end
 end
