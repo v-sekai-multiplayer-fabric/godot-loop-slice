@@ -1,11 +1,14 @@
-# Build and sign the loop-slice client and server MSIX packages.
-# Set secrets LOOP_PFX_BASE64 + LOOP_PFX_PASSWORD for a trusted cert;
-# without them both jobs self-sign a TEST cert (installable only after trusting it).
-# The editor + double Windows template come from v-sekai-multiplayer-fabric/godot-images.
+# Build + sign the loop-slice client and server MSIX packages via packaging/build_msix.py.
+# That one cross-platform script downloads the merged "double" editor + Windows template from
+# v-sekai-multiplayer-fabric/godot-images, exports both Windows builds, and packs+signs the MSIX
+# with packaging/msix/pack.ps1 + packaging/msix-server/pack-server.ps1 (Windows SDK).
 #
-# On push: tags v* the version is derived from the git tag and the latest
-# godot-images release is used automatically. MSIX assets are uploaded to
-# the GitHub Release created by release.yml.
+# Set secrets LOOP_PFX_BASE64 + LOOP_PFX_PASSWORD for a trusted cert; without them the build
+# self-signs a TEST cert (installable only after trusting it).
+#
+# NB: the godot-images "latest" tag currently ships an INCOMPLETE windows-editor.zip (driver
+# DLLs only, no Godot binary). Use a 6-asset release such as 0.1.0-dev.8, which carries the real
+# Windows editor + template. That is the default below and the script's built-in default.
 name: Release MSIX
 
 on:
@@ -18,14 +21,7 @@ on:
       godot_images_tag:
         description: godot-images release tag providing the merged editor + double templates
         required: true
-      editor_asset:
-        description: Windows editor asset name in that release
-        required: true
-        default: godot.windows.editor.double.x86_64.exe
-      windows_template_asset:
-        description: Windows double export template asset name
-        required: true
-        default: godot.windows.template_release.double.x86_64.exe
+        default: "0.1.0-dev.8"
   push:
     tags: ["v*"]
 
@@ -33,21 +29,18 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
-    outputs:
-      version: ${{ steps.inputs.outputs.version }}
-      godot_tag: ${{ steps.inputs.outputs.godot_tag }}
-      editor_asset: ${{ steps.inputs.outputs.editor_asset }}
-      windows_template_asset: ${{ steps.inputs.outputs.windows_template_asset }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Resolve inputs
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Resolve version + godot-images tag
         id: inputs
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             tag="${GITHUB_REF_NAME}"
@@ -57,136 +50,67 @@ jobs:
             build_n="${pre##*.}"
             [ -z "$pre" ] && build_n=0
             version="${core}.${build_n}"
-            godot_tag=$(gh release list -R v-sekai-multiplayer-fabric/godot-images \
-              --limit 1 --json tagName -q '.[0].tagName')
-            editor_asset="godot.windows.editor.double.x86_64.exe"
-            windows_template_asset="godot.windows.template_release.double.x86_64.exe"
+            godot_tag="0.1.0-dev.8"   # pin to a complete godot-images release
           else
             version="${{ github.event.inputs.version }}"
             godot_tag="${{ github.event.inputs.godot_images_tag }}"
-            editor_asset="${{ github.event.inputs.editor_asset }}"
-            windows_template_asset="${{ github.event.inputs.windows_template_asset }}"
           fi
-          echo "version=$version"              >> "$GITHUB_OUTPUT"
-          echo "godot_tag=$godot_tag"          >> "$GITHUB_OUTPUT"
-          echo "editor_asset=$editor_asset"    >> "$GITHUB_OUTPUT"
-          echo "windows_template_asset=$windows_template_asset" >> "$GITHUB_OUTPUT"
+          echo "version=$version"   >> "$GITHUB_OUTPUT"
+          echo "godot_tag=$godot_tag" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch merged editor + Windows template from godot-images
-        shell: bash
+      - name: Decode signing cert (optional)
+        id: cert
+        shell: pwsh
         env:
-          GH_TOKEN: ${{ github.token }}
+          LOOP_PFX_BASE64: ${{ secrets.LOOP_PFX_BASE64 }}
         run: |
-          mkdir -p tools templates
-          gh release download "${{ steps.inputs.outputs.godot_tag }}" \
-            -R v-sekai-multiplayer-fabric/godot-images \
-            -p "${{ steps.inputs.outputs.editor_asset }}" -D tools
-          gh release download "${{ steps.inputs.outputs.godot_tag }}" \
-            -R v-sekai-multiplayer-fabric/godot-images \
-            -p "${{ steps.inputs.outputs.windows_template_asset }}" -D templates
+          if ($env:LOOP_PFX_BASE64) {
+            $p = "$env:RUNNER_TEMP\loop.pfx"
+            [IO.File]::WriteAllBytes($p, [Convert]::FromBase64String($env:LOOP_PFX_BASE64))
+            "pfx=$p" >> $env:GITHUB_OUTPUT
+          }
 
-      - name: Export Windows client build
-        shell: bash
-        run: |
-          GODOT="$GITHUB_WORKSPACE/tools/${{ steps.inputs.outputs.editor_asset }}"
-          tmpl="$GITHUB_WORKSPACE/templates/${{ steps.inputs.outputs.windows_template_asset }}"
-          sed -i "s|custom_template/release=.*|custom_template/release=\"$tmpl\"|" export_presets.cfg
-          mkdir -p build/windows
-          "$GODOT" --headless --import . || true
-          "$GODOT" --headless --export-release "Windows Desktop" build/windows/loop-slice.exe
-          ls -la build/windows
-
-      - name: Upload client build
-        uses: actions/upload-artifact@v5
-        with:
-          name: windows-client-build
-          path: build/windows/
-
-      - name: Export Windows Dedicated Server build
-        shell: bash
-        run: |
-          GODOT="$GITHUB_WORKSPACE/tools/${{ steps.inputs.outputs.editor_asset }}"
-          mkdir -p build/windows-server
-          "$GODOT" --headless --export-release "Windows Dedicated Server" \
-            build/windows-server/loop-slice-server.exe
-          ls -la build/windows-server
-
-      - name: Upload server build
-        uses: actions/upload-artifact@v5
-        with:
-          name: windows-server-build
-          path: build/windows-server/
-
-  msix-client:
-    needs: build-windows
-    runs-on: windows-latest
-    env:
-      LOOP_PFX_BASE64: ${{ secrets.LOOP_PFX_BASE64 }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Download client build
-        uses: actions/download-artifact@v5
-        with:
-          name: windows-client-build
-          path: build/windows
-
-      - name: Import signing cert
-        if: ${{ env.LOOP_PFX_BASE64 != '' }}
-        shell: bash
-        run: echo "$LOOP_PFX_BASE64" | base64 -d > loop.pfx
-
-      - name: Pack + sign client MSIX
+      - name: Build + sign client & server MSIX
         shell: pwsh
         run: |
-          $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
-          pwsh packaging/msix/pack.ps1 -BinDir build/windows -Version "${{ needs.build-windows.outputs.version }}" -OutDir dist @pfx
+          $pfx = @()
+          if ("${{ steps.cert.outputs.pfx }}") {
+            $pfx = @("--pfx", "${{ steps.cert.outputs.pfx }}", "--pfx-pass", "${{ secrets.LOOP_PFX_PASSWORD }}")
+          }
+          python packaging/build_msix.py `
+            --tag "${{ steps.inputs.outputs.godot_tag }}" `
+            --version "${{ steps.inputs.outputs.version }}" `
+            --stage "$env:RUNNER_TEMP\msix" @pfx
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\msix\project\dist\*.msix" dist\
+          Get-ChildItem dist
 
       - uses: actions/upload-artifact@v5
         with:
           name: loop-slice-msix
-          path: dist/v-sekai-loop-slice-*.msix
+          path: dist/*.msix
 
-      - name: Upload client MSIX to GitHub Release
+      - name: Upload MSIX to the GitHub Release (curl, no gh)
         if: ${{ github.event_name == 'push' }}
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
-        run: gh release upload "${{ github.ref_name }}" dist/v-sekai-loop-slice-*.msix --clobber
-
-  msix-server:
-    needs: build-windows
-    runs-on: windows-latest
-    env:
-      LOOP_PFX_BASE64: ${{ secrets.LOOP_PFX_BASE64 }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Download server build
-        uses: actions/download-artifact@v5
-        with:
-          name: windows-server-build
-          path: build/windows-server
-
-      - name: Import signing cert
-        if: ${{ env.LOOP_PFX_BASE64 != '' }}
-        shell: bash
-        run: echo "$LOOP_PFX_BASE64" | base64 -d > loop.pfx
-
-      - name: Pack + sign server MSIX
-        shell: pwsh
         run: |
-          $pfx = if (Test-Path loop.pfx) { @("-PfxPath","loop.pfx","-PfxPassword","${{ secrets.LOOP_PFX_PASSWORD }}") } else { @() }
-          pwsh packaging/msix-server/pack-server.ps1 -BinDir build/windows-server -Version "${{ needs.build-windows.outputs.version }}" -OutDir dist @pfx
-
-      - uses: actions/upload-artifact@v5
-        with:
-          name: loop-slice-server-msix
-          path: dist/v-sekai-loop-slice-server-*.msix
-
-      - name: Upload server MSIX to GitHub Release
-        if: ${{ github.event_name == 'push' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        shell: bash
-        run: gh release upload "${{ github.ref_name }}" dist/v-sekai-loop-slice-server-*.msix --clobber
+          tag="${GITHUB_REF_NAME}"
+          repo="${GITHUB_REPOSITORY}"
+          auth=(-H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json")
+          # release.yml creates the release on the same tag push; resolve its id
+          rel_id=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/tags/$tag" \
+                   | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
+          for f in dist/*.msix; do
+            name=$(basename "$f")
+            # clobber: drop any existing asset with the same name first
+            old=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/$rel_id/assets" \
+                  | python -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a['name']=='$name'),''))")
+            [ -n "$old" ] && curl -fSs -X DELETE "${auth[@]}" "https://api.github.com/repos/$repo/releases/assets/$old"
+            echo "uploading $name -> release $rel_id"
+            curl -fSs -X POST "${auth[@]}" -H "Content-Type: application/octet-stream" \
+              --data-binary @"$f" \
+              "https://uploads.github.com/repos/$repo/releases/$rel_id/assets?name=$name"
+          done
