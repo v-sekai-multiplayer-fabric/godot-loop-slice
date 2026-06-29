@@ -1,0 +1,38 @@
+# Build + push the loop-slice headless server container image to GHCR, baked on the
+# fabric "double" editor image. Mirrors the godot-images build-docker job.
+name: Server image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Containerfile
+      - .containerignore
+      - server.gd
+      - project.godot
+      - "core/**"
+      - "adapters/**"
+      - "ports/**"
+      - "autoload/**"
+      - .github/workflows/release-server-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and push image (podman)
+        run: |
+          img="ghcr.io/${{ github.repository_owner }}/loop-slice-server"
+          podman build --tag "$img:latest" --tag "$img:${{ github.sha }}" -f Containerfile .
+          podman push "$img:latest"
+          podman push "$img:${{ github.sha }}"

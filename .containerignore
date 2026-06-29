@@ -1,0 +1,9 @@
+.git
+.github
+.godot
+build
+dist
+run
+*.db
+packaging/msix/dist
+packaging/msix-server/dist
