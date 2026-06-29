@@ -93,9 +93,13 @@ func _otel_init() -> void:
 	_otel = ClassDB.instantiate("OpenTelemetry")
 	# OpenTelemetry is a Node; in the tree it drives its async HTTP export queue.
 	root.call_deferred("add_child", _otel)
+	# Export is opt-in: configure the OTLP exporter only when an endpoint is set. With no
+	# collector configured the module still records spans/metrics but does not export, so
+	# there is no connect-retry spam against a 127.0.0.1 collector that is not running.
 	var endpoint := OS.get_environment("OTEL_EXPORTER_OTLP_ENDPOINT")
 	if endpoint == "":
-		endpoint = "http://127.0.0.1:4318"
+		print("OTEL idle (set OTEL_EXPORTER_OTLP_ENDPOINT to export)")
+		return
 	var svc := OS.get_environment("OTEL_SERVICE_NAME")
 	if svc == "":
 		svc = "loop-server"

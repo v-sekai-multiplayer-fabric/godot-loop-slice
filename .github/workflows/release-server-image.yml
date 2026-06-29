@@ -48,22 +48,9 @@ jobs:
       - name: Build server image
         run: podman build -t loop-slice-server:test -f Containerfile .
 
-      - name: Fetch the double editor for the bot clients
-        run: |
-          base="https://github.com/v-sekai-multiplayer-fabric/godot-images/releases/download/0.1.0-dev.8"
-          curl -fL --retry 3 "$base/linux-editor.zip" -o linux-editor.zip
-          unzip -q linux-editor.zip -d _editor
-          godot=$(find _editor -type f -name 'godot.linuxbsd*editor*' ! -name '*.zip' \
-                    -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2)
-          chmod +x "$godot"
-          echo "GODOT=${GITHUB_WORKSPACE}/${godot}" >> "$GITHUB_ENV"
-
-      # Advisory for now: the container smoke passes locally against an editor-binary
-      # test image, but has not yet been validated against the real godot-editor-double
-      # base in CI. Keep it non-blocking until that is debugged, so it does not gate
-      # the image build/push.
-      - name: Containerized server smoke (advisory)
-        continue-on-error: true
+      # Server and bot clients both run from the built image (same engine build), so
+      # no separately fetched editor is needed.
+      - name: Containerized server smoke (the deploy gate)
         run: IMAGE=loop-slice-server:test tools/smoke_container.sh
 
       - name: Tag + push to GHCR (main only)
