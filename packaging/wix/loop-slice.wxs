@@ -27,6 +27,9 @@
         <Component Id="C_RunDemo">
           <File Id="runDemoPs1" Source="$(BinDir)/run-demo.ps1" />
         </Component>
+        <Component Id="C_RunDemoCmd">
+          <File Id="runDemoCmd" Source="$(BinDir)/run-demo.cmd" />
+        </Component>
         <Component Id="C_Obs">
           <File Source="$(BinDir)/setup-observability.ps1" />
         </Component>
@@ -41,8 +44,7 @@
         <Shortcut Id="RunDemoShortcut"
                   Name="V-Sekai Loop-Slice Demo"
                   Description="Run the loot-action demo (server, bots, observability)"
-                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
-                  Arguments="-ExecutionPolicy Bypass -File &quot;[#runDemoPs1]&quot;"
+                  Target="[#runDemoCmd]"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="CleanupShortcut" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\V-Sekai\LoopSliceDemo" Name="installed"
@@ -54,6 +56,7 @@
       <ComponentRef Id="C_Client" />
       <ComponentRef Id="C_Server" />
       <ComponentRef Id="C_RunDemo" />
+      <ComponentRef Id="C_RunDemoCmd" />
       <ComponentRef Id="C_Obs" />
       <ComponentRef Id="C_Readme" />
       <ComponentRef Id="C_Shortcut" />

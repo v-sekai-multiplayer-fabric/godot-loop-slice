@@ -18,7 +18,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = $PSScriptRoot
+$root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $exe = Join-Path $root 'loop-slice.exe'
 if (-not (Test-Path $exe)) { throw "missing $exe -- run this from the installed/unzipped folder" }
 
