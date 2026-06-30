@@ -1,8 +1,8 @@
-# Build the Windows demo and publish it as both a plain-exe zip and a WiX MSI installer
-# (unsigned, msiexec-installable; no MSIX, no Windows SDK, no signing).
-# packaging/build_msix.exs --exe-only exports the client + server .exe from the godot-images
-# merged "double" editor + Windows template; this workflow bundles the launcher into a zip,
-# wraps the same files in an MSI via WiX, and uploads both to the GitHub Release (curl, no gh).
+# Build the loot-action slice for Windows and publish it as a plain zip (no installers).
+# packaging/build_windows.exs downloads the merged "double" editor + Windows template from
+# godot-images and exports the client + server .exe; this workflow bundles them with the
+# scripts/windows launchers into v-sekai-loop-slice-demo-windows.zip and uploads it to the
+# GitHub Release (curl, no gh). Distribution is the zip (and the fabric-scoop-central bucket).
 #
 # Use a complete godot-images release such as 0.1.0-dev.8 (the "latest" tag ships an
 # incomplete windows-editor.zip).
@@ -15,10 +15,6 @@ on:
         description: godot-images release tag (merged editor + double templates)
         required: true
         default: "0.1.0-dev.8"
-      version:
-        description: Four-part MSI version (e.g. 0.1.0.0)
-        required: true
-        default: "0.1.0.0"
   push:
     tags: ["v*"]
 
@@ -36,66 +32,38 @@ jobs:
           otp-version: "27"
           elixir-version: "1.18"
 
-      - name: Resolve godot-images tag + version
+      - name: Resolve godot-images tag
         id: inputs
         shell: bash
         run: |
           if [ "${{ github.event_name }}" = "push" ]; then
             godot_tag="0.1.0-dev.8"   # pin to a complete godot-images release
-            # tag vX.Y.Z-dev.N -> MSI version X.Y.N.0 (N as the build field so upgrades detect)
-            tag="${GITHUB_REF_NAME}"; semver="${tag#v}"
-            core="${semver%%-*}"; pre="${semver#${core}}"; build_n="${pre##*.}"
-            [ -z "$pre" ] && build_n=0
-            version="${core%.*}.${build_n}.0"
           else
             godot_tag="${{ github.event.inputs.godot_images_tag }}"
-            version="${{ github.event.inputs.version }}"
           fi
           echo "godot_tag=$godot_tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
 
-      - name: Export Windows exes + stage launcher
+      - name: Export Windows exes + bundle the zip
         shell: pwsh
         run: |
           $stage = "$env:RUNNER_TEMP\demo"
-          elixir packaging/build_msix.exs --exe-only --tag "${{ steps.inputs.outputs.godot_tag }}" --stage "$stage"
+          elixir packaging/build_windows.exs --tag "${{ steps.inputs.outputs.godot_tag }}" --stage "$stage"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $pkg = "$env:RUNNER_TEMP\pkg"
           New-Item -ItemType Directory -Force $pkg | Out-Null
           Copy-Item "$stage\project\build\windows\loop-slice.exe" $pkg\
           Copy-Item "$stage\project\build\windows-server\loop-slice-server.exe" $pkg\
           Copy-Item scripts\windows\* $pkg\
-          Get-ChildItem $pkg
-
-      - name: Bundle the demo zip
-        shell: pwsh
-        run: |
-          $pkg = "$env:RUNNER_TEMP\pkg"
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path "$pkg\*" -DestinationPath dist\v-sekai-loop-slice-demo-windows.zip -Force
-
-      - name: Build the MSI installers (WiX, unsigned)
-        shell: pwsh
-        run: |
-          $pkg = "$env:RUNNER_TEMP\pkg"
-          $ver = "${{ steps.inputs.outputs.version }}"
-          # Pin WiX v5: v6+ require accepting the paid OSMF EULA (build error WIX7015).
-          dotnet tool install --global wix --version 5.0.2
-          # all three share the one staged dir; each .wxs picks the files it needs
-          wix build packaging\wix\loop-slice.wxs        -d BinDir="$pkg" -d Version="$ver" -o dist\v-sekai-loop-slice-setup.msi
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          wix build packaging\wix\loop-slice-server.wxs -d BinDir="$pkg" -d Version="$ver" -o dist\v-sekai-loop-slice-server-setup.msi
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          wix build packaging\wix\loop-slice-client.wxs -d BinDir="$pkg" -d Version="$ver" -o dist\v-sekai-loop-slice-client-setup.msi
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-ChildItem dist
 
       - uses: actions/upload-artifact@v5
         with:
           name: loop-slice-demo-windows
-          path: dist/*
+          path: dist/v-sekai-loop-slice-demo-windows.zip
 
-      - name: Upload the zip + MSI to the GitHub Release (curl, no gh)
+      - name: Upload the zip to the GitHub Release (curl, no gh)
         if: ${{ github.event_name == 'push' }}
         env:
           GH_TOKEN: ${{ github.token }}
@@ -107,16 +75,12 @@ jobs:
           # release.yml creates the release on the same tag push; resolve its id
           rel_id=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/tags/$tag" \
                    | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
-          for f in dist/v-sekai-loop-slice-demo-windows.zip \
-                   dist/v-sekai-loop-slice-setup.msi \
-                   dist/v-sekai-loop-slice-server-setup.msi \
-                   dist/v-sekai-loop-slice-client-setup.msi; do
-            name=$(basename "$f")
-            old=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/$rel_id/assets" \
-                  | python -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a['name']=='$name'),''))")
-            [ -n "$old" ] && curl -fSs -X DELETE "${auth[@]}" "https://api.github.com/repos/$repo/releases/assets/$old"
-            echo "uploading $name -> release $rel_id"
-            curl -fSs -X POST "${auth[@]}" -H "Content-Type: application/octet-stream" \
-              --data-binary @"$f" \
-              "https://uploads.github.com/repos/$repo/releases/$rel_id/assets?name=$name"
-          done
+          f=dist/v-sekai-loop-slice-demo-windows.zip
+          name=$(basename "$f")
+          old=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/$rel_id/assets" \
+                | python -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a['name']=='$name'),''))")
+          [ -n "$old" ] && curl -fSs -X DELETE "${auth[@]}" "https://api.github.com/repos/$repo/releases/assets/$old"
+          echo "uploading $name -> release $rel_id"
+          curl -fSs -X POST "${auth[@]}" -H "Content-Type: application/octet-stream" \
+            --data-binary @"$f" \
+            "https://uploads.github.com/repos/$repo/releases/$rel_id/assets?name=$name"

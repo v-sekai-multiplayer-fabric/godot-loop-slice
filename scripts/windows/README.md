@@ -8,14 +8,14 @@ SQLite. No containers, no WSL.
 ## Run it
 
 1. Download `v-sekai-loop-slice-demo-windows.zip` from the GitHub release and unzip it
-   (or install one of the MSIs).
+   (or `scoop install` it from the `fabric-scoop-central` bucket).
 2. **Double-click `run-demo.cmd`.**
 
 That's it -- no PowerShell command, no execution-policy change, no `Unblock-File`. The
 `.cmd` runs the launcher as an in-memory scriptblock, which Windows execution policy and
-Mark-of-the-Web do not block (they only block running downloaded script *files*). If you
-installed an MSI, use the **V-Sekai Loop-Slice Demo** Start-menu shortcut instead -- it
-points at the same `.cmd`.
+Mark-of-the-Web do not block (they only block running downloaded script *files*). Installed
+through scoop, the same launchers are on `PATH` as `loop-slice-demo` / `loop-slice-server` /
+`loop-slice-client` shims.
 
 It starts the observability stack, the server, three headless bots, and your client
 window. In your window: **WASD** move, **T** to vote teleport (the run starts once the
@@ -55,8 +55,7 @@ database lives at `%LOCALAPPDATA%\v-sekai-loop-slice\profiles.db`.
 
 - First launch, Windows Defender Firewall may prompt to allow the server's UDP listener —
   allow it for local play.
-- These are unsigned test builds; SmartScreen may warn on first run. For a signed installer
-  instead, use the MSIX release (`packaging/build_msix.exs`).
+- These are unsigned builds; SmartScreen may warn on first run -- More info -> Run anyway.
 - To run the server as an always-on Windows service (boot-start, auto-restart), wrap
   `loop-slice-server.exe` with nssm — see the decision record
   *Running background services on Windows with nssm*.
