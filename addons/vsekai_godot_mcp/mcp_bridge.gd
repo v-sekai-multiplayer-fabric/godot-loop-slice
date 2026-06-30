@@ -11,13 +11,20 @@ const MCPCommandsLib = preload("mcp_commands.gd")
 const MCPHttpServerLib = preload("mcp_http_server.gd")
 
 const HOST := "127.0.0.1"
-const HTTP_PORT := 8788
+# MCP_PORT overrides the listen port (default 8788); "off"/"none"/"0" disables
+# the bridge — e.g. when running a second editor on the same host. Mirrors
+# mcp_runtime.gd so editor and runtime share one knob.
+const DEFAULT_PORT := 8788
+var HTTP_PORT := MCPHttpServerLib.resolve_port(DEFAULT_PORT)
 
 var _cmds = MCPCommandsLib.new()
 var _http = MCPHttpServerLib.new()
 
 
 func _enter_tree() -> void:
+	if HTTP_PORT <= 0:
+		print("[godot_mcp] bridge disabled (MCP_PORT=%s)" % OS.get_environment("MCP_PORT"))
+		return
 	_http.protocol.commands = _cmds
 	if _http.start(HTTP_PORT, HOST) == OK:
 		print("[godot_mcp] MCP streamable-HTTP on http://%s:%d/mcp" % [HOST, HTTP_PORT])
