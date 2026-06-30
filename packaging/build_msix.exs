@@ -222,7 +222,9 @@ defmodule BuildMsix do
 
     tag = o[:tag] || @default_tag
     version = o[:version] || @default_version
-    stage = o[:stage] || default_stage()
+    # Normalize to forward slashes: a Windows --stage like "D:\a\_temp\demo" otherwise
+    # reaches Path.wildcard (find_exe), where backslashes are glob escapes and match nothing.
+    stage = (o[:stage] || default_stage()) |> to_string() |> String.replace("\\", "/")
     force = o[:force] || false
     skip_server = o[:skip_server] || false
     exe_only = o[:exe_only] || false
