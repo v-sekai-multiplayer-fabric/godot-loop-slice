@@ -1,22 +1,16 @@
 #!/usr/bin/env elixir
-# Build the loop-slice client + server MSIX packages, end to end.
+# Export the loop-slice client + server Windows .exe (no installers).
 #
-# Elixir port of the former build_msix.py. Run with `elixir packaging/build_msix.exs`.
-# It downloads the merged "double" Godot editor + Windows template from the
-# godot-images release, stages the project, exports both Windows builds headless,
-# then packs + self-signs the MSIX with the existing pack.ps1 / pack-server.ps1.
+# Downloads the merged "double" Godot editor + Windows template from the godot-images
+# release, stages the project, and exports both Windows builds headless. The exes are
+# self-contained (embed_pck); distribution is a plain zip. Running the Windows editor
+# needs Windows or WSL (Windows interop).
 #
-# The pack/sign stage needs the Windows SDK (makeappx + signtool), which is only
-# reachable on native Windows or on WSL (via Windows interop) -- the build
-# requires one of those.
-#
-#   elixir packaging/build_msix.exs [--tag TAG] [--version A.B.C.D] [--stage DIR]
-#                                   [--skip-server] [--pfx PATH --pfx-pass PW] [--force]
+#   elixir packaging/build_windows.exs [--tag TAG] [--stage DIR] [--skip-server] [--force]
 
-defmodule BuildMsix do
+defmodule BuildWindows do
   @repo Path.expand("..", __DIR__)
   @default_tag "0.1.0-dev.8"
-  @default_version "0.1.0.1"
   @release_base "https://github.com/v-sekai-multiplayer-fabric/godot-images/releases/download"
   @editor_asset "windows-editor.zip"
   @template_asset "windows-template-release.zip"
@@ -86,10 +80,6 @@ defmodule BuildMsix do
         prof -> Path.join(prof, "loop-build")
       end
     end
-  end
-
-  def powershell do
-    Enum.find_value(["powershell.exe", "pwsh", "pwsh.exe"], &System.find_executable/1)
   end
 
   # ── stages ──────────────────────────────────────────────────────────────
@@ -197,42 +187,26 @@ defmodule BuildMsix do
     out
   end
 
-  def pack(ps, script, bindir, version, outdir, project, pfx, pfx_pass) do
-    args =
-      [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", to_win(script),
-       "-BinDir", to_win(bindir), "-Version", version, "-OutDir", to_win(outdir)]
-
-    args = if pfx, do: args ++ ["-PfxPath", to_win(pfx)], else: args
-    args = if pfx && pfx_pass, do: args ++ ["-PfxPassword", pfx_pass], else: args
-    [cmd | rest] = args
-    run!(cmd, rest, cd: project)
-  end
-
   # ── main ────────────────────────────────────────────────────────────────
   def main(argv) do
     unless windows?() or wsl?() do
-      die("MSIX build requires Windows or WSL -- makeappx/signtool are Windows-only")
+      die("the Windows editor export needs Windows or WSL (Windows interop) to run the editor")
     end
 
     {o, _, _} =
       OptionParser.parse(argv,
-        strict: [tag: :string, version: :string, stage: :string, skip_server: :boolean,
-                 exe_only: :boolean, pfx: :string, pfx_pass: :string, force: :boolean]
+        strict: [tag: :string, stage: :string, skip_server: :boolean, force: :boolean]
       )
 
     tag = o[:tag] || @default_tag
-    version = o[:version] || @default_version
     # Normalize to forward slashes: a Windows --stage like "D:\a\_temp\demo" otherwise
     # reaches Path.wildcard (find_exe), where backslashes are glob escapes and match nothing.
     stage = (o[:stage] || default_stage()) |> to_string() |> String.replace("\\", "/")
     force = o[:force] || false
     skip_server = o[:skip_server] || false
-    exe_only = o[:exe_only] || false
-    pfx = o[:pfx]
-    pfx_pass = o[:pfx_pass]
 
     IO.puts("windows=#{windows?()} wsl=#{wsl?()}")
-    IO.puts("tag=#{tag} version=#{version}")
+    IO.puts("tag=#{tag}")
     IO.puts("stage=#{stage}")
 
     # cache assets per tag so switching --tag never collides on a shared filename
@@ -240,10 +214,9 @@ defmodule BuildMsix do
     tools = Path.join(dl, "editor")
     templates = Path.join(dl, "template")
     project = Path.join(stage, "project")
-    dist = Path.join(project, "dist")
     Enum.each([dl, tools, templates, project], &File.mkdir_p!/1)
 
-    IO.puts("\n[1/5] fetch + unzip godot-images assets")
+    IO.puts("\n[1/4] fetch + unzip godot-images assets")
     editor_zip = Path.join(dl, @editor_asset)
     template_zip = Path.join(dl, @template_asset)
     download("#{@release_base}/#{tag}/#{@editor_asset}", editor_zip, force)
@@ -255,14 +228,14 @@ defmodule BuildMsix do
     IO.puts("  editor   = #{Path.basename(editor)}")
     IO.puts("  template = #{Path.basename(template)}")
 
-    IO.puts("\n[2/5] stage project")
+    IO.puts("\n[2/4] stage project")
     stage_copy(@repo, project)
     IO.puts("  copied repo -> #{project}")
 
-    IO.puts("\n[3/5] patch export presets")
+    IO.puts("\n[3/4] patch export presets")
     patch_presets(Path.join(project, "export_presets.cfg"), to_win(template))
 
-    IO.puts("\n[4/5] export Windows builds (headless)")
+    IO.puts("\n[4/4] export Windows builds (headless)")
     run(to_string(editor), ["--headless", "--import", "."], cd: project)
     client_exe = export(editor, project, "Windows Desktop", "build/windows/loop-slice.exe")
 
@@ -271,31 +244,11 @@ defmodule BuildMsix do
         export(editor, project, "Windows Dedicated Server", "build/windows-server/loop-slice-server.exe")
       end
 
-    if exe_only do
-      # Plain-download demo path: stop after the exes -- no Windows SDK, no cert.
-      IO.puts("\nDONE (exe-only). Windows builds:")
-      for exe <- Enum.reject([client_exe, server_exe], &is_nil/1) do
-        IO.puts("  #{exe}  (#{File.stat!(exe).size} B)")
-      end
-    else
-      IO.puts("\n[5/5] pack + sign MSIX")
-      ps = powershell() || die("no PowerShell (powershell.exe / pwsh) for the pack stage")
-      File.mkdir_p!(dist)
-
-      pack(ps, Path.join([project, "packaging", "msix", "pack.ps1"]),
-        Path.join([project, "build", "windows"]), version, dist, project, pfx, pfx_pass)
-
-      unless skip_server do
-        pack(ps, Path.join([project, "packaging", "msix-server", "pack-server.ps1"]),
-          Path.join([project, "build", "windows-server"]), version, dist, project, pfx, pfx_pass)
-      end
-
-      IO.puts("\nDONE. MSIX outputs:")
-      for m <- Path.wildcard(Path.join(dist, "*.msix")) |> Enum.sort() do
-        IO.puts("  #{m}  (#{File.stat!(m).size} B)")
-      end
+    IO.puts("\nDONE. Windows builds:")
+    for exe <- Enum.reject([client_exe, server_exe], &is_nil/1) do
+      IO.puts("  #{exe}  (#{File.stat!(exe).size} B)")
     end
   end
 end
 
-BuildMsix.main(System.argv())
+BuildWindows.main(System.argv())
