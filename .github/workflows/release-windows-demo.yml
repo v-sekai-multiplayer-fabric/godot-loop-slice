@@ -74,13 +74,19 @@ jobs:
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Path "$pkg\*" -DestinationPath dist\v-sekai-loop-slice-demo-windows.zip -Force
 
-      - name: Build the MSI installer (WiX, unsigned)
+      - name: Build the MSI installers (WiX, unsigned)
         shell: pwsh
         run: |
           $pkg = "$env:RUNNER_TEMP\pkg"
+          $ver = "${{ steps.inputs.outputs.version }}"
           # Pin WiX v5: v6+ require accepting the paid OSMF EULA (build error WIX7015).
           dotnet tool install --global wix --version 5.0.2
-          wix build packaging\wix\loop-slice.wxs -d BinDir="$pkg" -d Version="${{ steps.inputs.outputs.version }}" -o dist\v-sekai-loop-slice-setup.msi
+          # all three share the one staged dir; each .wxs picks the files it needs
+          wix build packaging\wix\loop-slice.wxs        -d BinDir="$pkg" -d Version="$ver" -o dist\v-sekai-loop-slice-setup.msi
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          wix build packaging\wix\loop-slice-server.wxs -d BinDir="$pkg" -d Version="$ver" -o dist\v-sekai-loop-slice-server-setup.msi
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          wix build packaging\wix\loop-slice-client.wxs -d BinDir="$pkg" -d Version="$ver" -o dist\v-sekai-loop-slice-client-setup.msi
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-ChildItem dist
 
@@ -101,7 +107,10 @@ jobs:
           # release.yml creates the release on the same tag push; resolve its id
           rel_id=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/tags/$tag" \
                    | python -c 'import sys,json; print(json.load(sys.stdin)["id"])')
-          for f in dist/v-sekai-loop-slice-demo-windows.zip dist/v-sekai-loop-slice-setup.msi; do
+          for f in dist/v-sekai-loop-slice-demo-windows.zip \
+                   dist/v-sekai-loop-slice-setup.msi \
+                   dist/v-sekai-loop-slice-server-setup.msi \
+                   dist/v-sekai-loop-slice-client-setup.msi; do
             name=$(basename "$f")
             old=$(curl -fSs "${auth[@]}" "https://api.github.com/repos/$repo/releases/$rel_id/assets" \
                   | python -c "import sys,json; print(next((a['id'] for a in json.load(sys.stdin) if a['name']=='$name'),''))")

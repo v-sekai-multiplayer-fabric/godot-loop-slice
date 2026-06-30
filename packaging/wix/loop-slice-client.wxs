@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Client-only MSI: unsigned, per-user. Installs the client and run-client.ps1, which
+  connects to a server address (prompts if not given on the command line).
+  Built with: wix build packaging/wix/loop-slice-client.wxs -d BinDir=<staged> -d Version=0.1.N.0
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="V-Sekai Loop-Slice Client"
+           Manufacturer="V-Sekai"
+           Version="$(Version)"
+           UpgradeCode="6f9d3a4c-3e5b-4c7d-a08f-1b2c3d4e5f60"
+           Scope="perUser"
+           Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="V-Sekai Loop-Slice Client">
+        <Component Id="C_Client">
+          <File Source="$(BinDir)/loop-slice.exe" />
+        </Component>
+        <Component Id="C_RunClient">
+          <File Id="runClientPs1" Source="$(BinDir)/run-client.ps1" />
+        </Component>
+        <Component Id="C_Readme">
+          <File Source="$(BinDir)/README.md" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="C_Shortcut">
+        <Shortcut Id="RunClientShortcut"
+                  Name="V-Sekai Loop-Slice Client"
+                  Description="Connect to a loot-action server and play"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-ExecutionPolicy Bypass -File &quot;[#runClientPs1]&quot;"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="CleanupShortcut" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\V-Sekai\LoopSliceClient" Name="installed"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="V-Sekai Loop-Slice Client" Level="1">
+      <ComponentRef Id="C_Client" />
+      <ComponentRef Id="C_RunClient" />
+      <ComponentRef Id="C_Readme" />
+      <ComponentRef Id="C_Shortcut" />
+    </Feature>
+  </Package>
+</Wix>
