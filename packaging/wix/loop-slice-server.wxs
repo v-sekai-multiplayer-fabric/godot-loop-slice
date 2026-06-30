@@ -22,6 +22,9 @@
         <Component Id="C_RunServer">
           <File Id="runServerPs1" Source="$(BinDir)/run-server.ps1" />
         </Component>
+        <Component Id="C_RunServerCmd">
+          <File Id="runServerCmd" Source="$(BinDir)/run-server.cmd" />
+        </Component>
         <Component Id="C_Obs">
           <File Source="$(BinDir)/setup-observability.ps1" />
         </Component>
@@ -36,8 +39,7 @@
         <Shortcut Id="RunServerShortcut"
                   Name="V-Sekai Loop-Slice Server"
                   Description="Run the authoritative loot-action server"
-                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
-                  Arguments="-ExecutionPolicy Bypass -File &quot;[#runServerPs1]&quot;"
+                  Target="[#runServerCmd]"
                   WorkingDirectory="INSTALLFOLDER" />
         <RemoveFolder Id="CleanupShortcut" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\V-Sekai\LoopSliceServer" Name="installed"
@@ -48,6 +50,7 @@
     <Feature Id="Main" Title="V-Sekai Loop-Slice Server" Level="1">
       <ComponentRef Id="C_Server" />
       <ComponentRef Id="C_RunServer" />
+      <ComponentRef Id="C_RunServerCmd" />
       <ComponentRef Id="C_Obs" />
       <ComponentRef Id="C_Readme" />
       <ComponentRef Id="C_Shortcut" />

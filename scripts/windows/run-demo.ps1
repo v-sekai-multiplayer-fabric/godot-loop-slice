@@ -23,7 +23,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$root = $PSScriptRoot
+$root = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
 $serverExe = Join-Path $root 'loop-slice-server.exe'
 $clientExe = Join-Path $root 'loop-slice.exe'
 foreach ($exe in @($serverExe, $clientExe)) {
