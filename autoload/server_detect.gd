@@ -6,5 +6,9 @@ extends Node
 func _ready() -> void:
 	if not OS.has_feature("dedicated_server"):
 		return
-	OS.execute(OS.get_executable_path(), ["--script", "res://server.gd"])
+	# A dedicated server has no display and no HMD, so force --headless and
+	# --xr-mode off on the relaunch. Without them the child opens a window and
+	# stalls on OpenXR init (xrCreateInstance fails with no runtime), so it never
+	# binds the listener. This matches the CI smoke's `--headless --script server.gd`.
+	OS.execute(OS.get_executable_path(), ["--headless", "--xr-mode", "off", "--script", "res://server.gd"])
 	get_tree().quit()
