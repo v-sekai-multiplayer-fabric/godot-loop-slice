@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX source for the loot-action demo MSI: a plain, UNSIGNED, per-user installer that
+  drops the client + server exes and the launcher into LocalAppData and adds a Start-menu
+  shortcut that runs run-demo.ps1. Installs via msiexec without a signature or admin.
+  Built by .github/workflows/release-windows-demo.yml with:
+    wix build packaging/wix/loop-slice.wxs -d BinDir=<staged exes+scripts> -d Version=0.1.N.0
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="V-Sekai Loop-Slice Demo"
+           Manufacturer="V-Sekai"
+           Version="$(Version)"
+           UpgradeCode="4d7b9e2a-1c3f-4a5b-8e6d-9f0a1b2c3d4e"
+           Scope="perUser"
+           Compressed="yes">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of [ProductName] is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="INSTALLFOLDER" Name="V-Sekai Loop-Slice Demo">
+        <Component Id="C_Client">
+          <File Source="$(BinDir)/loop-slice.exe" />
+        </Component>
+        <Component Id="C_Server">
+          <File Source="$(BinDir)/loop-slice-server.exe" />
+        </Component>
+        <Component Id="C_RunDemo">
+          <File Id="runDemoPs1" Source="$(BinDir)/run-demo.ps1" />
+        </Component>
+        <Component Id="C_Obs">
+          <File Source="$(BinDir)/setup-observability.ps1" />
+        </Component>
+        <Component Id="C_Readme">
+          <File Source="$(BinDir)/README.md" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="C_Shortcut">
+        <Shortcut Id="RunDemoShortcut"
+                  Name="V-Sekai Loop-Slice Demo"
+                  Description="Run the loot-action demo (server, bots, observability)"
+                  Target="[System64Folder]WindowsPowerShell\v1.0\powershell.exe"
+                  Arguments="-ExecutionPolicy Bypass -File &quot;[#runDemoPs1]&quot;"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="CleanupShortcut" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\V-Sekai\LoopSliceDemo" Name="installed"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="V-Sekai Loop-Slice Demo" Level="1">
+      <ComponentRef Id="C_Client" />
+      <ComponentRef Id="C_Server" />
+      <ComponentRef Id="C_RunDemo" />
+      <ComponentRef Id="C_Obs" />
+      <ComponentRef Id="C_Readme" />
+      <ComponentRef Id="C_Shortcut" />
+    </Feature>
+  </Package>
+</Wix>
