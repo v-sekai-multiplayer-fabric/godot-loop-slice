@@ -28,6 +28,17 @@ var _buffer = BufferLib.new(256)  # parsed requests awaiting constant-work submi
 var enforce_origin := false
 
 
+# Resolve the MCP listen port from the MCP_PORT environment variable, falling
+# back to `fallback` (normally DEFAULT_PORT) when it is unset. A non-numeric
+# value ("off"/"none"/"disabled") or a number <= 0 resolves to 0, the caller's
+# signal to skip listening — so co-located instances don't collide on one port.
+static func resolve_port(fallback: int = DEFAULT_PORT) -> int:
+	var raw := OS.get_environment("MCP_PORT").strip_edges()
+	if raw == "":
+		return fallback
+	return int(raw) if raw.is_valid_int() else 0
+
+
 func start(port: int = DEFAULT_PORT, host: String = "127.0.0.1") -> int:
 	return _server.listen(port, host)
 

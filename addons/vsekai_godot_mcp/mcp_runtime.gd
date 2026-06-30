@@ -8,12 +8,20 @@ const MCPCommandsLib = preload("mcp_commands.gd")
 const MCPHttpServerLib = preload("mcp_http_server.gd")
 
 const HOST := "127.0.0.1"   # adb forward reaches the device loopback
-var HTTP_PORT := int(OS.get_environment("MCP_PORT")) if OS.get_environment("MCP_PORT") != "" else 8788
+# MCP_PORT overrides the listen port (default 8788). Set it to "off"/"none"/"0"
+# (or any non-numeric/<=0 value) to skip the runtime MCP entirely — needed when
+# several game instances share one host (e.g. the smoke's server + 4 bots), which
+# would otherwise all fight over the same port. Mirrors mcp_bridge.gd.
+const DEFAULT_PORT := 8788
+var HTTP_PORT := MCPHttpServerLib.resolve_port(DEFAULT_PORT)
 
 var _cmds = MCPCommandsLib.new()
 var _http = MCPHttpServerLib.new()
 
 func _ready() -> void:
+	if HTTP_PORT <= 0:
+		print("[godot_mcp] runtime MCP disabled (MCP_PORT=%s)" % OS.get_environment("MCP_PORT"))
+		return
 	_http.protocol.commands = _cmds
 	if _http.start(HTTP_PORT, HOST) == OK:
 		print("[godot_mcp] RUNTIME MCP on http://%s:%d/mcp" % [HOST, HTTP_PORT])
